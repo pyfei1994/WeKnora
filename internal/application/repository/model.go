@@ -65,9 +65,21 @@ func (r *modelRepository) List(
 // Update updates a model
 func (r *modelRepository) Update(ctx context.Context, m *types.Model) error {
 	// Use Select to explicitly update all fields, including zero values like false
-	return r.db.WithContext(ctx).Debug().Model(&types.Model{}).Where(
+	if err := r.db.WithContext(ctx).Debug().Model(&types.Model{}).Where(
 		"id = ? AND tenant_id = ?", m.ID, m.TenantID,
-	).Select("*").Updates(m).Error
+	).Select("*").Updates(m).Error; err != nil {
+		return err
+	}
+	// NOTE: GORM's `.Select("*").Updates(struct)` still skips zero-value fields
+	// (bool false, empty string). Without this follow-up, toggling
+	// is_builtin=true→false (or managed_by="foxme"→"") silently no-ops.
+	// Mirror the documented pattern from datasource_repo.go (force-write map).
+	return r.db.WithContext(ctx).Model(&types.Model{}).Where(
+		"id = ? AND tenant_id = ?", m.ID, m.TenantID,
+	).Updates(map[string]interface{}{
+		"is_builtin": m.IsBuiltin,
+		"managed_by": m.ManagedBy,
+	}).Error
 }
 
 // Delete deletes a model
