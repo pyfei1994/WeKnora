@@ -438,6 +438,9 @@ const handleModelSave = async (modelData: any) => {
       type: getModelType(saveType),
       source: modelData.source,
       description: '',
+      // 自定义分支（foxme fork）：透传「是否内置模型」开关。后端仅在 System Admin
+      // 身份下接受 true；普通租户管理员传 true 会被拒绝。false 为默认（私有）。
+      is_builtin: modelData.isBuiltin ?? false,
       parameters: {
         base_url: modelData.baseUrl?.trim() || '',
         ...apiKeyFields,

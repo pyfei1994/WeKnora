@@ -312,6 +312,23 @@
         </section>
       </template>
 
+      <!--
+        Section — 可见性（仅 System Admin 可见）。
+        开启「是否内置模型」后，该模型变为平台级内置模型，对所有租户可见，
+        普通租户不可编辑/删除。非系统管理员不显示此开关，避免越权把自有模型
+        变成全租户共享。
+      -->
+      <section v-if="authStore.isSystemAdmin" class="setting-drawer__section">
+        <h4 class="setting-drawer__section-title">{{ $t('model.editor.sectionVisibility') }}</h4>
+        <div class="form-item">
+          <label class="form-label">{{ $t('model.editor.isBuiltinLabel') }}</label>
+          <div class="vision-toggle">
+            <t-switch v-model="formData.isBuiltin" />
+            <span class="form-desc form-desc--inline">{{ $t('model.editor.isBuiltinDesc') }}</span>
+          </div>
+        </div>
+      </section>
+
       <!-- Section 3 — 高级选项（仅在有内容时渲染，避免空 section 出现底部分隔线） -->
       <section v-if="['embedding', 'chat', 'vllm'].includes(activeModelType)" class="setting-drawer__section">
         <h4 class="setting-drawer__section-title">{{ $t('model.editor.sectionAdvanced') }}</h4>
@@ -406,6 +423,7 @@ import {
 } from '@/api/model'
 import { useI18n } from 'vue-i18n'
 import { useUIStore } from '@/stores/ui'
+import { useAuthStore } from '@/stores/auth'
 import {
   defaultThinkingControl,
   resolveThinkingControl,
@@ -436,6 +454,8 @@ interface ModelFormData {
   supportsDimensionOverride?: boolean
   interfaceType?: 'ollama' | 'openai'
   isDefault: boolean
+  /** 是否平台级内置模型（对所有租户可见）。仅 System Admin 可在表单中开启。 */
+  isBuiltin?: boolean
   supportsVision?: boolean
   /** 后台任务对该模型的并发上限；0/undefined 表示沿用全局默认。仅 chat/embedding/vllm 生效。 */
   maxConcurrency?: number
@@ -459,6 +479,7 @@ interface Props {
 
 const { t, te } = useI18n()
 const uiStore = useUIStore()
+const authStore = useAuthStore()
 
 const props = withDefaults(defineProps<Props>(), {
   visible: false,
@@ -873,6 +894,7 @@ const formData = ref<ModelFormData>({
   supportsDimensionOverride: false,
   interfaceType: 'ollama',
   isDefault: false,
+  isBuiltin: false,
   supportsVision: false,
   maxConcurrency: undefined,
   thinkingControl: defaultThinkingControl('generic', ''),
@@ -1114,6 +1136,7 @@ const resetForm = () => {
     supportsDimensionOverride: false,
     interfaceType: undefined,
     isDefault: false,
+    isBuiltin: false,
     supportsVision: false,
     maxConcurrency: undefined,
     thinkingControl: defaultThinkingControl('generic', ''),
