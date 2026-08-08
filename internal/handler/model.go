@@ -49,6 +49,11 @@ type CreateModelRequest struct {
 	Source      types.ModelSource     `json:"source"      binding:"required"`
 	Description string                `json:"description"`
 	Parameters  types.ModelParameters `json:"parameters"  binding:"required"`
+	// IsBuiltin marks the model as a platform-level built-in (visible to all
+	// tenants). nil = caller does not care (default false). Only a System Admin
+	// (platform key) may set this to true — a tenant admin doing so would be a
+	// privilege escalation (their model would become visible to every tenant).
+	IsBuiltin *bool `json:"is_builtin"`
 }
 
 // CreateModel godoc
@@ -101,6 +106,19 @@ func (h *ModelHandler) CreateModel(c *gin.Context) {
 		Source:      req.Source,
 		Description: secutils.SanitizeForLog(req.Description),
 		Parameters:  req.Parameters,
+	}
+
+	// 自定义分支（foxme fork）：允许操作员把模型标记为平台级内置模型。
+	// 仅 System Admin（platform key）可置为 true，避免租户管理员越权让自有
+	// 模型对所有租户可见。managed_by 标记为 "foxme" 以与官方 YAML 内置模型区分。
+	if req.IsBuiltin != nil && *req.IsBuiltin {
+		if !types.IsSystemAdminFromContext(ctx) {
+			logger.Error(ctx, "Only system admin can create builtin models")
+			c.Error(errors.NewForbiddenError("only system admin can create builtin (all-tenant-visible) models"))
+			return
+		}
+		model.IsBuiltin = true
+		model.ManagedBy = "foxme"
 	}
 
 	if err := h.service.CreateModel(ctx, model); err != nil {
@@ -530,6 +548,9 @@ type UpdateModelRequest struct {
 	Parameters  types.ModelParameters `json:"parameters"`
 	Source      types.ModelSource     `json:"source"`
 	Type        types.ModelType       `json:"type"`
+	// IsBuiltin toggles platform-level built-in visibility. nil = leave
+	// unchanged. Only a System Admin may set this to true.
+	IsBuiltin *bool `json:"is_builtin"`
 }
 
 // UpdateModel godoc
@@ -575,6 +596,23 @@ func (h *ModelHandler) UpdateModel(c *gin.Context) {
 		logger.ErrorWithFields(ctx, err, nil)
 		c.Error(errors.NewInternalServerError(err.Error()))
 		return
+	}
+
+	// 自定义分支（foxme fork）：允许操作员切换模型的平台级内置可见性。
+	// 仅 System Admin 可将 is_builtin 置为 true；非管理员尝试置 true 直接拒绝。
+	// 置 true → managed_by="foxme"；置 false → 还原为空（交还 UI/API 手动管理）。
+	if req.IsBuiltin != nil {
+		if *req.IsBuiltin && !types.IsSystemAdminFromContext(ctx) {
+			logger.Error(ctx, "Only system admin can mark a model as builtin")
+			c.Error(errors.NewForbiddenError("only system admin can mark a model as builtin (all-tenant-visible)"))
+			return
+		}
+		model.IsBuiltin = *req.IsBuiltin
+		if *req.IsBuiltin {
+			model.ManagedBy = "foxme"
+		} else {
+			model.ManagedBy = ""
+		}
 	}
 
 	// Update model fields if they are provided in the request
