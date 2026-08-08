@@ -456,6 +456,7 @@ func attachPlatformAPIKeyAuthContext(c *gin.Context, key *types.TenantAPIKey) {
 	applyAuthSession(c, authSession{
 		User:      user,
 		Principal: principal,
+		SystemAdmin: user.IsSystemAdmin,
 		// This role context exists only for legacy guard compatibility after
 		// RequireRole short-circuits API-key principals; the key's real
 		// authority is its platform capabilities enforced by the APIKeyGate.
