@@ -546,6 +546,11 @@ func attachAPIKeyAuthContext(
 		TenantID:  tenantID,
 		Tenant:    t,
 		Role:      apiKeyTenantRoleContext,
+		// Propagate IsSystemAdmin from the resolved user (platform keys
+		// synthesize a user with IsSystemAdmin=true; tenant keys load it from
+		// the real user record). Without this, IsSystemAdminFromContext
+		// stays false for ALL API-key requests.
+		SystemAdmin: user.IsSystemAdmin,
 	}
 	if key != nil {
 		session.APIKeyScope = &types.TenantAPIKeyScope{
