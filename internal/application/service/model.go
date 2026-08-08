@@ -245,8 +245,16 @@ func (s *modelService) UpdateModel(ctx context.Context, model *types.Model) erro
 		// A UI edit is an explicit runtime override. Clear YAML ownership so
 		// the startup reconciler does not silently replace the saved values.
 		model.TenantID = existingModel.TenantID
-		model.IsBuiltin = true
-		model.ManagedBy = ""
+		if !model.IsBuiltin {
+			// SystemAdmin is explicitly demoting this model out of the
+			// platform-wide builtin set. Respect the request: leave
+			// is_builtin=false and clear managed_by so it stops being
+			// reconciled as a platform-wide entry.
+			model.ManagedBy = ""
+		} else {
+			model.IsBuiltin = true
+			model.ManagedBy = ""
+		}
 	}
 
 	// Update model in repository

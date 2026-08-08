@@ -477,10 +477,11 @@ func platformAPIKeyIdentity(key *types.TenantAPIKey) (types.Principal, *types.Us
 	principal := types.Principal{Type: types.PrincipalAPIPlatform, ID: strconv.FormatUint(keyID, 10)}
 	userID := principal.StorageID()
 	return principal, &types.User{
-		ID:       userID,
-		Username: userID,
-		Email:    fmt.Sprintf("platform-api-key-%d@api-key.local", keyID),
-		IsActive: true,
+		ID:            userID,
+		Username:      userID,
+		Email:         fmt.Sprintf("platform-api-key-%d@api-key.local", keyID),
+		IsActive:      true,
+		IsSystemAdmin: true,
 	}
 }
 
