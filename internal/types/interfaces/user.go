@@ -33,6 +33,11 @@ type UserService interface {
 	GetUserByTenantID(ctx context.Context, tenantID uint64) (*types.User, error)
 	// UpdateUser updates user information
 	UpdateUser(ctx context.Context, user *types.User) error
+	// SetUserActive enables or disables a user account by email. Disabling
+	// rejects future logins (the login paths check IsActive) and revokes all
+	// existing sessions so the lock takes effect immediately. Used by the admin
+	// console (foxme) to suspend a user without deleting their data.
+	SetUserActive(ctx context.Context, email string, active bool) error
 	// DeleteUser deletes a user
 	DeleteUser(ctx context.Context, id string) error
 	// ChangePassword changes user password

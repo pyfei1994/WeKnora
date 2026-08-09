@@ -522,6 +522,9 @@ services:
     restart: unless-stopped
     # 添加停机时的优雅退出时间
     stop_grace_period: 1m
+    # 暴露到宿主机，方便用本机客户端（DBeaver/pgcli 等）直连 WeKnora 数据库
+    ports:
+      - "${DB_PORT:-5432}:5432"
 
   redis:
     image: redis:7.0-alpine
@@ -530,6 +533,9 @@ services:
     restart: always
     networks:
       - WeKnora-network
+    # 暴露到宿主机，方便用本机 redis-cli / GUI 直连 WeKnora 的 Redis（注意需带 REDIS_PASSWORD）
+    ports:
+      - "6379:6379"
 
   # One-shot init: copy the read-only template settings.yml into a named volume
   # before searxng starts. Necessary because the searxng entrypoint sed-replaces

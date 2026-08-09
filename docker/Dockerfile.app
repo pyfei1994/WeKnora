@@ -43,6 +43,13 @@ ENV COMMIT_ID=${COMMIT_ID_ARG}
 ENV BUILD_TIME=${BUILD_TIME_ARG}
 ENV GO_VERSION=${GO_VERSION_ARG}
 
+# Regenerate Swagger docs from handler annotations so the running image's
+# /swagger UI stays in sync with the code. swag parses Go source and needs the
+# full toolchain (gcc/libsqlite3-dev) present in this builder stage, so it runs
+# here instead of relying on the committed (often stale) docs/ directory.
+RUN go install github.com/swaggo/swag/cmd/swag@latest
+RUN swag init -g ./cmd/server/main.go -o ./docs --parseDependency --parseInternal
+
 # Build the application with version info
 RUN --mount=type=cache,target=/go/pkg/mod make build-prod
 RUN --mount=type=cache,target=/go/pkg/mod cp -r /go/pkg/mod/github.com/yanyiwu/ /app/yanyiwu/

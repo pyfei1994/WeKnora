@@ -1576,6 +1576,12 @@ type ResetUserPasswordRequest struct {
 	NewPassword string `json:"new_password" binding:"required"`
 }
 
+// SetUserActiveRequest is the payload for the privileged enable/disable endpoint.
+type SetUserActiveRequest struct {
+	Email  string `json:"email" binding:"required,email"`
+	Active bool   `json:"active"`
+}
+
 // ResetUserPassword godoc
 // @Summary      Reset another user's password
 // @Description  Replace another user's local password and revoke all of their existing sessions (SystemAdmin only).
@@ -1631,6 +1637,103 @@ func (h *SystemHandler) ResetUserPassword(c *gin.Context) {
 		"sessions_revoked": true,
 	})
 	c.JSON(http.StatusOK, gin.H{"message": "Password reset successfully"})
+}
+
+// CreateUser godoc
+// @Summary      SystemAdmin 代建用户（绕过自助注册 gate）
+// @Description  由 SystemAdmin 或 platform key 调用，创建新用户并自动建个人空间（owner=该用户）。
+//               不受 auth.registration_mode=invite_only 限制——这是业务系统（如 foxme）在关闭公开
+//               注册时仍能按需为用户开通 WeKnora 账号的特权通道。tenant_provisioning 由服务端强制
+//               为 create_personal，调用方无法指定其他租户语义。
+// @Tags         System Admin
+// @Accept       json
+// @Produce      json
+// @Param        request  body  types.RegisterRequest  true  "建账号请求（username/email/password）"
+// @Success      201      {object}  types.User
+// @Failure      400      {object}  map[string]interface{} "参数错误 / 邮箱或用户名已存在"
+// @Router       /system/admin/users [post]
+// CreateUser creates a user with a personal tenant via the privileged
+// SystemAdmin route. This is a foxme-added interface: it lets business
+// systems (e.g. foxme) provision a WeKnora account + isolated personal
+// tenant for each end user while the platform stays in invite_only mode.
+// Unlike the public /auth/register gate, this route does NOT consult
+// auth.registration_mode, so it works even when public registration is closed.
+// @Summary      [foxme] 特权代建用户（个人租户）
+// @Description  业务系统（如 foxme）在 invite_only 下为每个终端用户开通独立 WeKnora 账号与租户；不读 registration_mode，故不受公开注册关闭影响。
+// @Tags         System Admin
+// @Accept       json
+// @Produce      json
+// @Param        body body types.RegisterRequest true "注册信息（username / email / password）"
+// @Success      201 {object} map[string]interface{} "创建成功，data 为带 tenant_id 的用户对象"
+// @Router       /system/admin/users [post]
+func (h *SystemHandler) CreateUser(c *gin.Context) {
+	ctx := logger.CloneContext(c.Request.Context())
+
+	if h.userSvc == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "user service unavailable"})
+		return
+	}
+
+	var req types.RegisterRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid create-user request"})
+		return
+	}
+	// 强制个人租户语义：被代建用户拥有独立空间（owner=本人），与 foxme
+	// 「一用户一租户」模型一致。此处刻意不读 auth.registration_mode，
+	// 因此 invite_only 不会拦截特权代建。
+	req.TenantProvisioning = types.TenantProvisioningCreatePersonal
+
+	user, err := h.userSvc.Register(ctx, &req)
+	if err != nil {
+		logger.Errorf(ctx, "Failed to create user %s: %v", req.Email, err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"success": true,
+		"data":    user,
+	})
+}
+
+// SetUserActive godoc
+// @Summary      [foxme] 禁用/启用用户（保留空间，不删租户/知识库）
+// @Description  由 SystemAdmin 或 platform key 调用。翻转指定 WeKnora 账号的 is_active，
+//               并吊销其全部会话使禁用立即生效；不删除租户 / 知识库 / 账号。
+//               foxme 中台用它替代「删除用户」，从而避免误删用户工作空间。
+// @Tags         System Admin
+// @Accept       json
+// @Produce      json
+// @Param        body body SetUserActiveRequest true "邮箱 + 目标状态"
+// @Success      200 {object} map[string]interface{} "操作成功，返回最终 is_active"
+// @Failure      400 {object} map[string]interface{} "参数错误"
+// @Failure      404 {object} map[string]interface{} "用户不存在"
+// @Router       /system/admin/users/status [post]
+func (h *SystemHandler) SetUserActive(c *gin.Context) {
+	ctx := logger.CloneContext(c.Request.Context())
+	if h.userSvc == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "user service unavailable"})
+		return
+	}
+	var req SetUserActiveRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid set-user-active request"})
+		return
+	}
+	if err := h.userSvc.SetUserActive(ctx, req.Email, req.Active); err != nil {
+		if errors.Is(err, repository.ErrUserNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+			return
+		}
+		logger.Errorf(ctx, "Failed to set active=%v for user %s: %v", req.Active, req.Email, err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    gin.H{"email": req.Email, "is_active": req.Active},
+	})
 }
 
 // ============================================================================

@@ -251,7 +251,23 @@ func RegisterSystemAdminRoutes(
 		adminRoutes.POST("/promote", handler.PromoteUserToSystemAdmin)
 		adminRoutes.POST("/revoke", handler.RevokeSystemAdmin)
 		adminRoutes.GET("/list", handler.ListSystemAdmins)
-		adminRoutes.POST("/users/reset-password", handler.ResetUserPassword)
+		// 与 CreateUser / SetUserActive 一样复用 platform key 的 system_tenants_manage 能力：
+		// 旧声明用 `adminRoutes.POST(..., handler.ResetUserPassword)` 直接挂路由，没过 apiKeyRoute，
+		// authorizer 找不到策略会 default deny，foxme 中台「重置密码」直接 403 失败。
+		// 加上 apiKeyPlatform 后 platform key 才放行。
+		g.apiKeyRoute(adminRoutes, http.MethodPost, "/users/reset-password",
+			apiKeyPlatform(types.APIKeyCapabilitySystemTenantsManage),
+			handler.ResetUserPassword)
+		// 特权代建用户：复用 platform key 已有的 system_tenants_manage 能力，
+		// 允许 foxme 等业务系统在 invite_only 下仍能为每个用户开通 WeKnora 账号。
+		g.apiKeyRoute(adminRoutes, http.MethodPost, "/users",
+			apiKeyPlatform(types.APIKeyCapabilitySystemTenantsManage),
+			handler.CreateUser)
+		// 特权禁用/启用用户：复用 platform key 的 system_tenants_manage 能力，
+		// 允许 foxme 中台在不删除租户/知识库的情况下停用/恢复用户账号（避免误删空间）。
+		g.apiKeyRoute(adminRoutes, http.MethodPost, "/users/status",
+			apiKeyPlatform(types.APIKeyCapabilitySystemTenantsManage),
+			handler.SetUserActive)
 		adminRoutes.GET("/api-keys", handler.ListPlatformAPIKeys)
 		adminRoutes.POST("/api-keys", handler.CreatePlatformAPIKey)
 		adminRoutes.DELETE("/api-keys/:key_id", handler.DeletePlatformAPIKey)

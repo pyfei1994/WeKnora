@@ -566,6 +566,34 @@ func (s *userService) UpdateUser(ctx context.Context, user *types.User) error {
 	return s.userRepo.UpdateUser(ctx, user)
 }
 
+// SetUserActive enables or disables a user account by email. Disabling rejects
+// future logins (the password/OIDC login paths check IsActive) and immediately
+// revokes all of the user's outstanding sessions, so the lock takes effect
+// without waiting for token expiry. This is a foxme-driven capability: the admin
+// console uses it to suspend a user without deleting their tenant / knowledge
+// base / account — avoiding accidental loss of a user's workspace.
+func (s *userService) SetUserActive(ctx context.Context, email string, active bool) error {
+	email = strings.TrimSpace(email)
+	if email == "" {
+		return errors.New("email is required")
+	}
+	user, err := s.userRepo.GetUserByEmail(ctx, email)
+	if err != nil || user == nil {
+		return apprepo.ErrUserNotFound
+	}
+	user.IsActive = active
+	if err := s.userRepo.UpdateUser(ctx, user); err != nil {
+		return err
+	}
+	// Revoke every session so a disabled account is locked out immediately.
+	// (ValidateToken does not re-check IsActive, so without this an already
+	// issued token would stay valid until it expired.)
+	if err := s.tokenRepo.RevokeTokensByUserID(ctx, user.ID); err != nil {
+		logger.Warnf(ctx, "SetUserActive: failed to revoke tokens for user %s: %v", user.ID, err)
+	}
+	return nil
+}
+
 // ListSystemAdmins lists users with IsSystemAdmin=true. Thin pass-through
 // to the repository; the handler enforces SystemAdmin gating, so the
 // service does not duplicate the role check here.
