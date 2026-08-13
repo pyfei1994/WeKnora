@@ -13,9 +13,9 @@
 #   - sandbox 镜像我们没有重建，继续用官方 wechatopenai/weknora-sandbox。
 #   - 当前版本基线：官方 tag v0.7.2；定制分支 feat/builtin-toggle。
 #   - 升级官方版本后，只需把下面三个 tag 改成新的 0.7.x-kitsume 即可。
-#   - postgres / redis 的 ports 是本机调试用的（Navicat/psql 等外部客户端），
-#     官方 base compose 故意不暴露端口。默认绑 127.0.0.1（仅本机），
-#     如需局域网访问请改成 0.0.0.0。
+#   - postgres / redis 的宿主端口已由官方 base compose 暴露
+#     （postgres: ${DB_PORT:-5432}，redis: 6379），此处不再重复映射，
+#     否则会被 compose 追加合并成两条冲突端口，导致容器绑定失败。
 
 services:
   frontend:
@@ -26,11 +26,3 @@ services:
 
   docreader:
     image: registry.cn-shanghai.aliyuncs.com/eftik/kitsume-weknora-docreader:0.7.2-kitsume
-
-  postgres:
-    ports:
-      - "127.0.0.1:5432:5432"
-
-  redis:
-    ports:
-      - "127.0.0.1:6379:6379"
