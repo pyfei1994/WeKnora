@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
 )
 
@@ -131,7 +132,7 @@ func (s *resourceCatalogFileService) GetFile(ctx context.Context, filePath strin
 	if err != nil {
 		return nil, err
 	}
-	return s.inner.GetFile(ctx, physical)
+	return s.inner.GetFile(ctx, unwrapBackendScope(physical))
 }
 
 func (s *resourceCatalogFileService) GetFileURL(ctx context.Context, filePath string) (string, error) {
@@ -146,7 +147,19 @@ func (s *resourceCatalogFileService) GetFileURL(ctx context.Context, filePath st
 		}
 		return s.externalURL + "/r/" + token, nil
 	}
-	return s.inner.GetFileURL(ctx, physical)
+	return s.inner.GetFileURL(ctx, unwrapBackendScope(physical))
+}
+
+// unwrapBackendScope strips the storage://{backendID}/ scope prefix that
+// BackendScopedFileService adds when a tenant pins a storage backend, so the
+// raw provider driver (oss:// etc.) can parse the path. resource:// references
+// resolved through the default file service may point at backend-scoped paths;
+// without unwrapping, parseOssFilePath fails with "invalid OSS file path".
+func unwrapBackendScope(path string) string {
+	if _, inner, ok := types.ParseStorageBackendPath(path); ok {
+		return inner
+	}
+	return path
 }
 
 func (s *resourceCatalogFileService) DeleteFile(ctx context.Context, filePath string) error {

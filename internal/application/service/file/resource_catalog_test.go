@@ -93,6 +93,22 @@ func TestResourceCatalogFileServiceReturnsReferenceAndResolvesReads(t *testing.T
 	require.Equal(t, inner.savedPath, inner.readPath)
 }
 
+func TestResourceCatalogFileServiceUnwrapsBackendScopedPath(t *testing.T) {
+	inner := &physicalFileStub{savedPath: "storage://backend-1/oss://kitsume/weknora-kitsume/10001/exports/a.jpg"}
+	catalog := &catalogStub{}
+	svc := NewResourceCatalogFileService(inner, catalog)
+
+	ref, err := svc.SaveBytes(context.Background(), []byte("image"), 10001, "a.jpg", false)
+	require.NoError(t, err)
+	require.Equal(t, "resource://AbCdEfGhIjKlMnOpQrStUv", ref)
+
+	// GetFile must hand the unwrapped oss:// path to the inner provider driver
+	reader, err := svc.GetFile(context.Background(), ref)
+	require.NoError(t, err)
+	require.NoError(t, reader.Close())
+	require.Equal(t, "oss://kitsume/weknora-kitsume/10001/exports/a.jpg", inner.readPath)
+}
+
 func TestResourceCatalogFileServiceReturnsShortExternalGrantURL(t *testing.T) {
 	t.Setenv("APP_EXTERNAL_URL", "https://weknora.example.com/")
 	inner := &physicalFileStub{savedPath: "local://7/exports/a.png"}
