@@ -58,8 +58,13 @@ class ParserEngineRegistry:
     def get_parser_class(self, engine: str, file_type: str) -> Type[BaseParser]:
         """Resolve parser class for the given engine and file type.
 
-        Falls back to builtin engine when the requested engine doesn't
-        support the file type.
+        Resolution order:
+        1. The explicitly requested engine (when given and it supports the type).
+        2. Any other engine that supports the type, preferring a non-builtin
+           engine over the builtin fallback (e.g. pptx -> markitdown when the
+           caller left the engine empty or requested an engine that cannot
+           handle presentations).
+        3. The builtin engine as the last resort.
         """
         ft = file_type.lower()
 
@@ -69,15 +74,30 @@ class ParserEngineRegistry:
                 logger.info("Using engine '%s' for file type '%s'", engine, ft)
                 return cls
             logger.info(
-                "Engine '%s' does not support '%s', falling back to builtin",
+                "Engine '%s' does not support '%s', searching other engines",
                 engine,
                 ft,
             )
 
-        builtin = self._engines.get(BUILTIN_ENGINE, {})
-        cls = builtin.get(ft)
-        if cls:
-            return cls
+        # No engine / requested engine can't handle the type: pick the first
+        # engine that supports it, preferring dedicated (non-builtin) engines
+        # so e.g. pptx/ppt route to markitdown instead of failing.
+        fallback = None
+        for name, file_types in self._engines.items():
+            if engine and name == engine:
+                continue
+            cls = file_types.get(ft)
+            if cls:
+                if name == BUILTIN_ENGINE:
+                    if fallback is None:
+                        fallback = cls
+                    continue
+                logger.info("Using engine '%s' for file type '%s'", name, ft)
+                return cls
+
+        if fallback is not None:
+            logger.info("Using engine '%s' for file type '%s'", BUILTIN_ENGINE, ft)
+            return fallback
 
         raise ValueError(f"Unsupported file type: {file_type}")
 
