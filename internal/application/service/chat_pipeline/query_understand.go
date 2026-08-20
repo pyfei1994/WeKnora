@@ -2,6 +2,7 @@ package chatpipeline
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -123,6 +124,26 @@ func (p *PluginQueryUnderstand) OnEvent(ctx context.Context,
 		MaxCompletionTokens: maxTokens,
 		Thinking:            &thinking,
 	})
+	if err != nil && useImages {
+		// The VLM/vision rewrite call failed (e.g. unsupported image format,
+		// HTTP 400). Retry with a text model and no images so the turn still
+		// yields a usable query instead of aborting the whole pipeline.
+		pipelineWarn(ctx, "QueryUnderstand", "image_rewrite_fallback", map[string]interface{}{
+			"session_id": chatManage.SessionID,
+			"error":      err.Error(),
+		})
+		if textModel, _ := p.selectModel(ctx, chatManage, false); textModel != nil {
+			userMsg = chat.Message{Role: "user", Content: userContent}
+			response, err = textModel.Chat(modelCtx, []chat.Message{
+				{Role: "system", Content: systemContent},
+				userMsg,
+			}, &chat.ChatOptions{
+				Temperature:         0.3,
+				MaxCompletionTokens: maxTokens,
+				Thinking:            &thinking,
+			})
+		}
+	}
 	if err != nil {
 		pipelineError(ctx, "QueryUnderstand", "model_call", map[string]interface{}{
 			"session_id": chatManage.SessionID,
@@ -133,6 +154,17 @@ func (p *PluginQueryUnderstand) OnEvent(ctx context.Context,
 
 	// --- Parse structured output ---
 	p.parseOutput(chatManage, response.Content)
+
+	// Backfill image description with a dedicated VLM call. The combined
+	// rewrite+intent+image_description model call does not reliably emit the
+	// structured `image_description` field when a vision model answers with
+	// free-form text for image inputs, which would otherwise leave the
+	// downstream non-vision chat model blind to the image ("没收到图片").
+	if chatManage.ImageDescription == "" && len(chatManage.Images) > 0 && chatManage.VLMModelID != "" {
+		if desc := p.describeImages(ctx, chatManage); desc != "" {
+			chatManage.ImageDescription = desc
+		}
+	}
 
 	// Persist image description asynchronously — this DB write does not affect
 	// the current pipeline result, so it can run in the background.
@@ -457,4 +489,73 @@ func formatConversationHistory(historyList []*types.History) string {
 		builder.WriteString("\n------END------\n")
 	}
 	return builder.String()
+}
+
+// describeImages produces a textual description of the uploaded images via a
+// dedicated VLM call, independent of the rewrite model's structured-JSON
+// output. It mirrors the agent/pure-chat analyzeImageAttachments path and is
+// robust to vision models that answer image inputs with free-form text instead
+// of the expected `image_description` JSON field.
+func (p *PluginQueryUnderstand) describeImages(ctx context.Context, chatManage *types.ChatManage) string {
+	vlmModel, err := p.modelService.GetVLMModel(ctx, chatManage.VLMModelID)
+	if err != nil {
+		pipelineWarn(ctx, "QueryUnderstand", "vlm_model_resolve", map[string]interface{}{
+			"session_id":   chatManage.SessionID,
+			"vlm_model_id": chatManage.VLMModelID,
+			"error":        err.Error(),
+		})
+		return ""
+	}
+
+	query := chatManage.Query
+	var prompt string
+	if strings.TrimSpace(query) == "" {
+		prompt = "请分析这张图片的内容。如果包含文字，请提取关键文字信息；如果是自然图片，请描述其主要内容。用简洁的中文回答。"
+	} else {
+		prompt = fmt.Sprintf("用户的问题是：%s\n\n请分析图片中与用户问题相关的内容。"+
+			"如果图片包含文字/文档/表格，请提取与问题相关的关键信息。"+
+			"如果是自然图片/截图/图表，请描述与问题相关的视觉内容。"+
+			"用简洁的中文回答，只输出分析结果。", query)
+	}
+
+	var parts []string
+	for _, imgURI := range chatManage.Images {
+		raw, ok := decodeDataURIToBytes(imgURI)
+		if !ok {
+			continue
+		}
+		analysis, aErr := vlmModel.Predict(ctx, [][]byte{raw}, prompt)
+		if aErr != nil {
+			pipelineWarn(ctx, "QueryUnderstand", "vlm_analysis", map[string]interface{}{
+				"session_id": chatManage.SessionID,
+				"error":      aErr.Error(),
+			})
+			continue
+		}
+		if s := strings.TrimSpace(analysis); s != "" {
+			parts = append(parts, s)
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+// decodeDataURIToBytes extracts raw bytes from a data: URI such as
+// "data:image/png;base64,....". Returns ok=false for non-data URIs or invalid
+// base64 so callers can skip gracefully.
+func decodeDataURIToBytes(dataURI string) ([]byte, bool) {
+	if !strings.HasPrefix(dataURI, "data:") {
+		return nil, false
+	}
+	idx := strings.Index(dataURI, ";base64,")
+	if idx < 0 {
+		return nil, false
+	}
+	decoded, err := base64.StdEncoding.DecodeString(dataURI[idx+8:])
+	if err != nil {
+		return nil, false
+	}
+	return decoded, true
 }
