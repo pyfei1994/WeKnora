@@ -83,6 +83,11 @@ WORKDIR /app
 
 ARG APK_MIRROR_ARG
 
+# [kitsume fork] pip 镜像源：国内直连 PyPI 官方源（files.pythonhosted.org）易超时，
+# 默认走清华 TUNA 镜像；海外构建可用 --build-arg PIP_INDEX_URL= 覆盖回官方源。
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+ENV PIP_INDEX_URL=${PIP_INDEX_URL}
+
 # Create a non-root user first
 RUN useradd -m -s /bin/bash appuser
 
