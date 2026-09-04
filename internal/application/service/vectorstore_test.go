@@ -838,6 +838,7 @@ CREATE TABLE IF NOT EXISTS knowledge_bases (
     extract_config TEXT NULL DEFAULT NULL,
     faq_config TEXT,
     question_generation_config TEXT NULL,
+    auto_tag_config TEXT NULL,
     is_temporary BOOLEAN NOT NULL DEFAULT 0,
     is_pinned INTEGER NOT NULL DEFAULT 0,
     pinned_at DATETIME NULL,
@@ -924,6 +925,9 @@ func (r *realKBRepo) CountByVectorStoreID(ctx context.Context, db *gorm.DB, tena
 }
 func (r *realKBRepo) CountByModelID(_ context.Context, _ uint64, _ string) (int64, error) {
 	return 0, nil
+}
+func (r *realKBRepo) ListModelUsages(_ context.Context, _ uint64, _ string) ([]types.ModelUsageResource, error) {
+	return []types.ModelUsageResource{}, nil
 }
 
 // The remaining methods are not called by the tested code paths; declare them

@@ -3,6 +3,9 @@
     <Transition name="modal">
       <div v-if="visible" class="settings-overlay" @click.self="handleClose">
         <div class="settings-modal">
+          <div v-if="loading" class="editor-initializing" role="status" :aria-label="$t('common.loading')">
+            <t-loading size="medium" :text="$t('common.loading')" />
+          </div>
           <!-- 关闭按钮 -->
           <button class="close-btn" @click="handleClose" :aria-label="$t('general.close')">
             <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
@@ -406,10 +409,12 @@
                     ref="advancedSettingsRef"
                     v-if="formData"
                     :question-generation="formData.questionGenerationConfig"
+                    :auto-tag="formData.autoTagConfig"
                     :rag-enabled="formData.indexingStrategy?.vectorEnabled || formData.indexingStrategy?.keywordEnabled"
                     :all-models="allModels"
                     :table-metadata-instructions="formData.chunkingConfig.tableMetadataInstructions"
                     @update:question-generation="handleQuestionGenerationUpdate"
+                    @update:auto-tag="(value) => { if (formData) formData.autoTagConfig = value }"
                     @update:table-metadata-instructions="(value: string) => { if (formData) formData.chunkingConfig.tableMetadataInstructions = value }"
                   />
                 </div>
@@ -443,7 +448,8 @@
                   <t-button theme="default" variant="outline" @click="handleClose">
                     {{ $t('common.cancel') }}
                   </t-button>
-                  <t-button theme="primary" data-guide="kb-create-submit" @click="handleSubmit" :loading="saving">
+                  <t-button theme="primary" data-guide="kb-create-submit" @click="handleSubmit" :loading="saving"
+                    :disabled="loading">
                     {{ saveButtonLabel }}
                   </t-button>
                 </div>
@@ -466,8 +472,9 @@ import { KB_EDITOR_FOCUS_SECTION_EVENT, markContextualGuideDone } from '@/config
 import { MessagePlugin, DialogPlugin } from 'tdesign-vue-next'
 import { createKnowledgeBase, getKnowledgeBaseById, listKnowledgeFiles, updateKnowledgeBase, rebuildKBIndex } from '@/api/knowledge-base'
 import { updateKBConfig, type KBModelConfigRequest } from '@/api/initialization'
-import { type ModelConfig } from '@/api/model'
 import { useChatResourcesStore } from '@/stores/chatResources'
+import { selectInitialModelId } from '@/utils/modelDefaults'
+import { copyWithToast } from '@/utils/clipboard'
 import { useEditorResourcesStore } from '@/stores/editorResources'
 import { useUIStore } from '@/stores/ui'
 import { useAuthStore } from '@/stores/auth'
@@ -516,27 +523,7 @@ const saveButtonLabel = computed(() =>
 )
 
 const copyKbId = async () => {
-  const id = activeKbId.value
-  if (!id) return
-
-  try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(id)
-    } else {
-      const textarea = document.createElement('textarea')
-      textarea.value = id
-      textarea.setAttribute('readonly', '')
-      textarea.style.position = 'fixed'
-      textarea.style.opacity = '0'
-      document.body.appendChild(textarea)
-      textarea.select()
-      document.execCommand('copy')
-      document.body.removeChild(textarea)
-    }
-    MessagePlugin.success(t('common.copied'))
-  } catch {
-    MessagePlugin.error(t('common.copyFailed'))
-  }
+  await copyWithToast(activeKbId.value, 'common.copied')
 }
 
 const currentSection = ref<string>('basic')
@@ -697,17 +684,13 @@ const kbCreateNeedsEmbedding = computed(() => {
 
 const applyDefaultModelsIfEmpty = () => {
   if (!formData.value || editorMode.value !== 'create') return
-  const pick = (type: ModelConfig['type']) => {
-    const list = allModels.value.filter((m) => m.type === type)
-    return list.find((m) => m.is_default) || list[0]
+  const chatModelId = selectInitialModelId(allModels.value, 'KnowledgeQA')
+  const embeddingModelId = selectInitialModelId(allModels.value, 'Embedding')
+  if (!formData.value.modelConfig.llmModelId && chatModelId) {
+    formData.value.modelConfig.llmModelId = chatModelId
   }
-  const chat = pick('KnowledgeQA')
-  const embedding = pick('Embedding')
-  if (!formData.value.modelConfig.llmModelId && chat?.id) {
-    formData.value.modelConfig.llmModelId = chat.id
-  }
-  if (!formData.value.modelConfig.embeddingModelId && embedding?.id) {
-    formData.value.modelConfig.embeddingModelId = embedding.id
+  if (!formData.value.modelConfig.embeddingModelId && embeddingModelId) {
+    formData.value.modelConfig.embeddingModelId = embeddingModelId
   }
 }
 
@@ -792,6 +775,12 @@ const initFormData = (type: 'document' | 'faq' = 'document') => {
       questionCount: 3,
       customInstructions: ''
     },
+    autoTagConfig: {
+      enabled: false,
+      modelId: '',
+      maxTags: 3,
+      skipIfTagged: true
+    },
     wikiConfig: {
       synthesisModelId: '',
       maxPagesPerIngest: 0,
@@ -830,8 +819,19 @@ const loadAllModels = async (force = false) => {
   }
 }
 
+let kbEditorLoadGeneration = 0
+
+const isCurrentKBLoad = (generation: number, kbId: string) => (
+  generation === kbEditorLoadGeneration
+  && props.visible
+  && activeKbId.value === kbId
+)
+
 // 加载知识库数据（编辑模式）
-const loadKBData = async (kbIdOverride?: string) => {
+const loadKBData = async (
+  kbIdOverride?: string,
+  generation = kbEditorLoadGeneration,
+) => {
   const kbId = kbIdOverride ?? activeKbId.value
   if (editorMode.value !== 'edit' || !kbId) return
   
@@ -841,6 +841,8 @@ const loadKBData = async (kbIdOverride?: string) => {
       getKnowledgeBaseById(kbId),
       listKnowledgeFiles(kbId, { page: 1, page_size: 1 })
     ])
+
+    if (!isCurrentKBLoad(generation, kbId)) return
     
     if (!kbInfo || !kbInfo.data) {
       throw new Error(t('knowledgeEditor.messages.notFound'))
@@ -912,6 +914,14 @@ const loadKBData = async (kbIdOverride?: string) => {
         questionCount: kb.question_generation_config?.question_count || 3,
         customInstructions: kb.question_generation_config?.custom_instructions || ''
       },
+      autoTagConfig: {
+        enabled: kb.auto_tag_config?.enabled || false,
+        modelId: kb.auto_tag_config?.model_id || '',
+        maxTags: kb.auto_tag_config?.max_tags || 3,
+        // Absent on knowledge bases saved before the toggle existed; the
+        // backend treats that as "skip", so mirror it here.
+        skipIfTagged: kb.auto_tag_config?.skip_if_tagged ?? true
+      },
       wikiConfig: {
         synthesisModelId: kb.wiki_config?.synthesis_model_id || '',
         maxPagesPerIngest: kb.wiki_config?.max_pages_per_ingest || 0,
@@ -947,11 +957,14 @@ const loadKBData = async (kbIdOverride?: string) => {
     initialStorageProvider.value = formData.value.storageProvider
     initialIndexingStrategy.value = { ...formData.value.indexingStrategy }
   } catch (error) {
+    if (!isCurrentKBLoad(generation, kbId)) return
     console.error('Failed to load knowledge base data:', error)
     MessagePlugin.error(t('knowledgeEditor.messages.loadDataFailed'))
     handleClose()
   } finally {
-    loading.value = false
+    if (isCurrentKBLoad(generation, kbId)) {
+      loading.value = false
+    }
   }
 }
 
@@ -1266,6 +1279,13 @@ const buildSubmitData = () => {
     }
   }
 
+  data.auto_tag_config = {
+    enabled: formData.value.autoTagConfig?.enabled || false,
+    model_id: formData.value.autoTagConfig?.modelId || '',
+    max_tags: formData.value.autoTagConfig?.maxTags || 3,
+    skip_if_tagged: formData.value.autoTagConfig?.skipIfTagged ?? true
+  }
+
   if (formData.value.type === 'faq') {
     data.faq_config = {
       index_mode: formData.value.faqConfig?.indexMode || 'question_only',
@@ -1390,6 +1410,7 @@ const doSubmit = async () => {
         }
       }
       if (formData.value.type !== 'faq') {
+        updateConfig.auto_tag_config = data.auto_tag_config
         updateConfig.indexing_strategy = {
           vector_enabled: formData.value.indexingStrategy?.vectorEnabled ?? true,
           keyword_enabled: formData.value.indexingStrategy?.keywordEnabled ?? true,
@@ -1529,15 +1550,19 @@ const resetState = () => {
 const handleClose = () => {
   emit('update:visible', false)
   setTimeout(() => {
+    if (props.visible) return
     resetState()
   }, 300)
 }
 
 // 监听弹窗打开/关闭
 watch(() => props.visible, async (newVal) => {
+  const generation = ++kbEditorLoadGeneration
   if (newVal) {
     // 打开弹窗时，先重置状态
     resetState()
+    loading.value = true
+    const targetKbId = props.kbId
     
     // 检查是否有初始 section，如果有则跳转
     if (uiStore.kbEditorInitialSection) {
@@ -1546,20 +1571,24 @@ watch(() => props.visible, async (newVal) => {
     
     // 加载模型列表与空间默认存储引擎（创建 KB 时即使用，不依赖是否打开「存储引擎」Tab）
     await Promise.all([loadAllModels(), loadTenantDefaultStorageProvider()])
+
+    if (generation !== kbEditorLoadGeneration || !props.visible) return
     
     // 根据模式加载数据
-    if (props.mode === 'edit' && props.kbId) {
-      await loadKBData()
+    if (props.mode === 'edit' && targetKbId) {
+      await loadKBData(targetKbId, generation)
     } else {
       // 创建模式：初始化空表单，并预填空间默认存储引擎
       formData.value = initFormData(props.initialType || 'document')
       formData.value.storageProvider = tenantDefaultStorageProvider.value
       hasFiles.value = false
       applyDefaultModelsIfEmpty()
+      loading.value = false
     }
   } else {
     // 关闭弹窗时，延迟重置状态（等待动画结束）
     setTimeout(() => {
+      if (props.visible) return
       resetState()
       currentSection.value = 'basic' // 重置为默认 section
     }, 300)
@@ -1575,6 +1604,12 @@ watch(
     }
   }
 )
+
+watch(() => chatResources.allModels, (list) => {
+  if (props.visible) {
+    allModels.value = list || []
+  }
+})
 </script>
 
 <style scoped lang="less">
@@ -1605,6 +1640,16 @@ watch(
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.editor-initializing {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--td-bg-color-container);
 }
 
 .close-btn {
