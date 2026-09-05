@@ -159,6 +159,21 @@ fork 曾用启发式修复（`ff2db17e`）；**v0.8.0 上游已引入 `_DEFAULT_
 合并后容器内全量编译 + 单测通过（Linux 容器；sqlite-vec 需 `apt-get install libsqlite3-dev`；
 `TestDeploymentCapabilityKeysMatchFrontend` 在 Windows 工作树因 CRLF 检出假失败，LF 化后 PASS）。
 
+**v0.8.0 上游新增的行为变化（已生产验证）**：`internal/middleware/auth.go:isPlatformTenantOptionalAPI`
+新增「platform key 免租户头白名单」——仅放行 `/api/v1/system/admin` 前缀全部路径、
+`GET /tenants/all|/tenants/search`、`POST /tenants`，**其余端点 platform key 不带 X-Tenant-ID 一律
+409 TENANT_REQUIRED**。影响核对：
+
+- fork 三条特权路由挂载在 `/api/v1/system/admin/users*` 前缀下，**天然在白名单内，无需改动**；
+  生产实测空 body 返 400（参数校验）= 路由在 + platform key 鉴权 + SystemAdmin 放行全链路正常。
+- ⚠️ `GET /api/v1/tenants` 这类租户级端点从 v0.8.0 起对无租户头的 platform key 返 409，
+  客户端需带 `X-Tenant-ID`（或改用 `GET /tenants/all`）。排查时别把 409 当合并丢路由。
+
+**生产部署记录（2026-09-05）**：weknora.eftik.com（138）/opt/weknora-kitsume 已升级
+`0.8.0-kitsume` 三件套（DB/Redis 走阿里云 RDS，qdrant 数据卷未动）；RDS 迁移 79→90；
+升级前全库备份 `/opt/weknora-kitsume/weknora_pre_080.dump`（pg_dump -Fc，2.9M），
+compose 原文件备份 `docker-compose.yml.bak.0.7.2`。
+
 ---
 
 ## 4. 镜像（阿里云私有镜像库）
@@ -281,3 +296,9 @@ git merge v0.8.1
 12. **本机 Git Bash 的 native `ssh-keygen` 不认 `/c/...` POSIX 路径**（报
     "Saving key failed: No such file or directory"），必须用 Windows 风格
     `C:/Users/vante/.ssh/id_ed25519`。
+13. **pg_dump 版本必须 ≥ RDS 服务端版本**：`postgres:16-alpine` 的 pg_dump 连 PostgreSQL 18 的
+    RDS 报 "aborting because of server version mismatch"，用 `postgres:18-alpine` 即可
+    （138 已留存该镜像，配合 `-e PGPASSWORD` 从 .env 读密码，勿把密码放上命令行）。
+14. **WorkBuddy 沙箱无 sshpass / 密钥未配时**，用 paramiko 密码认证执行远程命令：
+    `kitsume/scripts/ssh_run.py HOST PORT USER PASSWORD "command"`（受 600s 超时限制，
+    长任务拆步跑；Git Bash 调该脚本时脚本路径要用 `C:/...` 风格，否则被 python 误解析）。
