@@ -253,6 +253,31 @@ func (s *knowledgeBaseService) assembleSearchResults(
 		)
 	}
 
+	// Collapse same-image sibling chunks before enrichment.
+	//
+	// One uploaded image expands into several chunks sharing a single parent:
+	// text (the "![](...)" markdown), image_ocr, image_caption and summary.
+	// Each carries its own chunk ID, so chunk-ID dedup cannot see that they
+	// describe the same picture, and a query matching the image returns all
+	// of them. Feeding every sibling to the model makes it cite the same image
+	// once per chunk — the "same image shows up four times" symptom.
+	//
+	// Only image documents collapse: a plain-text document's chunks carry no
+	// image_* sibling, so the common path (and its chunk ordering) is
+	// untouched.
+	var collapsedAway []string
+	searchResults, collapsedAway = collapseImageSiblings(ctx, searchResults)
+	// Mark both the survivors (already recorded above, but re-marking is
+	// harmless) and the collapsed siblings as handled. The siblings are still
+	// present in chunkMap, so without this the enrichment pass below treats
+	// them as unclaimed candidates and adds them straight back.
+	for _, r := range searchResults {
+		addedChunkIDs[r.ID] = true
+	}
+	for _, id := range collapsedAway {
+		addedChunkIDs[id] = true
+	}
+
 	// Second pass: Add enrichment chunks (parent, nearby, relation)
 	if !skipEnrichment {
 		for chunkID, chunk := range chunkMap {
@@ -280,6 +305,116 @@ func (s *knowledgeBaseService) assembleSearchResults(
 	}
 
 	return searchResults
+}
+
+// collapseImageSiblings merges the sibling chunks of one image document into a
+// single search result.
+//
+// An uploaded image yields several chunks under one parent: the text chunk
+// holding the "![](...)" markdown, plus image_ocr, image_caption and summary.
+// They all match the same query but each has a distinct chunk ID, so
+// chunk-level dedup keeps every one of them and the model ends up citing one
+// picture N times.
+//
+// Documents without image_ocr / image_caption siblings pass through untouched,
+// preserving the existing ordering and count for plain-text knowledge. When a
+// document does have image siblings, the winner is chosen by how much the
+// model can actually use: image_caption (a description plus the image URL)
+// first, then image_ocr, then summary, then text. The highest score among the
+// collapsed group is kept so ranking against other documents is unchanged.
+//
+// Returns the collapsed results plus the IDs that were dropped, so the caller
+// can mark them handled and keep the enrichment pass from re-adding them.
+func collapseImageSiblings(ctx context.Context, results []*types.SearchResult) ([]*types.SearchResult, []string) {
+	if len(results) < 2 {
+		return results, nil
+	}
+
+	// Group image-document results by knowledge ID. A document only qualifies
+	// when at least one image_ocr / image_caption chunk matched — that is what
+	// distinguishes "one picture, many views" from ordinary multi-chunk text.
+	type group struct {
+		indices   []int
+		topScore  float64
+		hasImage  bool
+		winnerIdx int
+	}
+	groupsByKnowledge := make(map[string]*group)
+	for i, r := range results {
+		if r == nil || r.KnowledgeID == "" {
+			continue
+		}
+		g, ok := groupsByKnowledge[r.KnowledgeID]
+		if !ok {
+			g = &group{winnerIdx: i}
+			groupsByKnowledge[r.KnowledgeID] = g
+		}
+		g.indices = append(g.indices, i)
+		if r.Score > g.topScore {
+			g.topScore = r.Score
+		}
+		if r.ChunkType == types.ChunkTypeImageOCR || r.ChunkType == types.ChunkTypeImageCaption {
+			g.hasImage = true
+		}
+	}
+
+	// Pick the winner per image document.
+	dropIndices := make(map[int]bool)
+	var droppedIDs []string
+	for _, g := range groupsByKnowledge {
+		if !g.hasImage || len(g.indices) < 2 {
+			continue
+		}
+		bestRank := -1
+		for _, i := range g.indices {
+			rank := imageSiblingPriority(results[i].ChunkType)
+			if rank > bestRank {
+				bestRank = rank
+				g.winnerIdx = i
+			}
+		}
+		winner := results[g.winnerIdx]
+		// Carry the group's best score so the collapsed result keeps its
+		// position relative to results from other documents.
+		winner.Score = g.topScore
+		for _, i := range g.indices {
+			if i != g.winnerIdx {
+				dropIndices[i] = true
+				droppedIDs = append(droppedIDs, results[i].ID)
+			}
+		}
+	}
+
+	if len(dropIndices) == 0 {
+		return results, nil
+	}
+
+	collapsed := make([]*types.SearchResult, 0, len(results)-len(dropIndices))
+	for i, r := range results {
+		if dropIndices[i] {
+			continue
+		}
+		collapsed = append(collapsed, r)
+	}
+	logger.Infof(ctx, "Collapsed %d image sibling chunk(s) into their parent result", len(dropIndices))
+	return collapsed, droppedIDs
+}
+
+// imageSiblingPriority ranks chunk types of one image document by how much
+// signal they carry for the model. Higher wins.
+func imageSiblingPriority(chunkType string) int {
+	switch chunkType {
+	case types.ChunkTypeImageCaption:
+		return 4
+	case types.ChunkTypeImageOCR:
+		return 3
+	case types.ChunkTypeSummary:
+		return 2
+	case types.ChunkTypeText:
+		return 1
+	default:
+		return 0
+	}
 }
 
 // collectRelatedChunkIDs extracts related chunk IDs from a chunk.
