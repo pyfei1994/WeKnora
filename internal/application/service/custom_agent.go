@@ -309,6 +309,107 @@ func (s *customAgentService) UpdateAgent(ctx context.Context, agent *types.Custo
 	return existingAgent, nil
 }
 
+// BatchUpdateChatModel re-points the conversation model on many agents at once.
+//
+// Rationale: when a model is rotated or deprecated the admin has to fix every
+// agent that referenced it. Doing that through PUT /agents/:id needs a full
+// config round-trip per agent (read it back, merge, write), which is slow and
+// racy. Here we only patch config.model_id in the database.
+//
+// Built-in agents are refused rather than silently written: their config comes
+// from code and is shared by every tenant, so a per-tenant patch would either
+// be ignored on read or leak into other tenants.
+func (s *customAgentService) BatchUpdateChatModel(
+	ctx context.Context, agentIDs []string, modelID string,
+) (*types.BatchModelUpdateResult, error) {
+	modelID = strings.TrimSpace(modelID)
+	if modelID == "" {
+		return nil, errors.New("model_id is required")
+	}
+
+	tenantID, ok := types.TenantIDFromContext(ctx)
+	if !ok {
+		return nil, ErrInvalidTenantID
+	}
+
+	// Deduplicate while preserving the caller's order so the skip/notfound
+	// lists read back the way they were sent in.
+	seen := make(map[string]struct{}, len(agentIDs))
+	unique := make([]string, 0, len(agentIDs))
+	for _, raw := range agentIDs {
+		id := strings.TrimSpace(raw)
+		if id == "" {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		unique = append(unique, id)
+	}
+
+	result := &types.BatchModelUpdateResult{
+		SkippedBuiltin: make([]string, 0),
+		NotFound:       make([]string, 0),
+		ModelID:        modelID,
+	}
+	if len(unique) == 0 {
+		return result, nil
+	}
+
+	// Split built-in from writable up front.
+	writable := make([]string, 0, len(unique))
+	for _, id := range unique {
+		if types.IsBuiltinAgentID(id) {
+			result.SkippedBuiltin = append(result.SkippedBuiltin, id)
+			continue
+		}
+		writable = append(writable, id)
+	}
+	if len(writable) == 0 {
+		return result, nil
+	}
+
+	// Narrow to ids that actually exist in this tenant, so RowsAffected can be
+	// trusted as "updated" rather than just "matched the IN clause".
+	existing, err := s.repo.ListAgentsByTenantID(ctx, tenantID)
+	if err != nil {
+		logger.ErrorWithFields(ctx, err, map[string]interface{}{"tenant_id": tenantID})
+		return nil, err
+	}
+	live := make(map[string]struct{}, len(existing))
+	for _, a := range existing {
+		if a != nil {
+			live[a.ID] = struct{}{}
+		}
+	}
+	targets := make([]string, 0, len(writable))
+	for _, id := range writable {
+		if _, ok := live[id]; !ok {
+			result.NotFound = append(result.NotFound, id)
+			continue
+		}
+		targets = append(targets, id)
+	}
+	if len(targets) == 0 {
+		return result, nil
+	}
+
+	affected, err := s.repo.BatchUpdateChatModelOnConfigs(ctx, tenantID, targets, modelID)
+	if err != nil {
+		logger.ErrorWithFields(ctx, err, map[string]interface{}{
+			"tenant_id": tenantID, "count": len(targets),
+		})
+		return nil, err
+	}
+	result.Updated = int(affected)
+
+	logger.Infof(ctx,
+		"Batch updated chat model, tenant: %d, model: %s, updated: %d, builtin skipped: %d, not found: %d",
+		tenantID, modelID, result.Updated, len(result.SkippedBuiltin), len(result.NotFound))
+	return result, nil
+}
+
 // updateBuiltinAgent updates a built-in agent's configuration (but not basic info)
 func (s *customAgentService) updateBuiltinAgent(ctx context.Context, agent *types.CustomAgent, tenantID uint64) (*types.CustomAgent, error) {
 	// Persist locale-independent display fields (the YAML "default" locale) so

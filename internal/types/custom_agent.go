@@ -607,3 +607,18 @@ func GetBuiltinAgent(id string, tenantID uint64) *CustomAgent {
 	}
 	return nil
 }
+
+// BatchModelUpdateResult summarises a batch chat-model reassignment across
+// agents. Every requested id lands in exactly one bucket, so callers can tell
+// "nothing happened" apart from "some of it was refused".
+type BatchModelUpdateResult struct {
+	// Updated is the number of agents whose chat model was actually changed.
+	Updated int
+	// SkippedBuiltin lists built-in agent ids that were refused: their config
+	// is code-owned and shared across tenants, so an admin cannot re-point them.
+	SkippedBuiltin []string
+	// NotFound lists requested ids that no longer exist in the tenant.
+	NotFound []string
+	// ModelID echoes the model that was applied, for the caller's confirmation UI.
+	ModelID string
+}

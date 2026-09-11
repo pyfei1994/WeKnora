@@ -34,6 +34,12 @@ func RegisterCustomAgentRoutes(r *gin.RouterGroup, agentHandler *handler.CustomA
 		agentsRead.GET("/type-presets", g.Viewer(), agentHandler.GetAgentTypePresets)
 		// Create custom agent — Contributor+
 		agentsWrite.POST("", g.Contributor(), agentHandler.CreateAgent)
+		// Batch re-point the chat model across many agents — Admin+.
+		// This rewrites the conversation model for a whole space in one call,
+		// so it needs the same authority as editing any agent in that space.
+		// Registered before /:id routes to avoid Gin treating "batch-model"
+		// as an agent id.
+		agentsWrite.POST("/batch-model", g.Admin(), agentHandler.BatchUpdateAgentModel)
 		// List all agents (including built-in) — Viewer+
 		agentsRead.GET("", g.Viewer(), agentHandler.ListAgents)
 		// Get agent by ID — Viewer+

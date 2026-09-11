@@ -45,6 +45,7 @@
 | 10 | Docker | 国内构建链：GOPROXY / APK 阿里镜像 / PyPI 清华镜像（PIP_INDEX_URL） | `cd788267` | 3.7 |
 | 11 | docreader | 引擎自动选择修复 —— **v0.8.0 上游已用类型级默认引擎表覆盖，合并时取上游版** | `ff2db17e`（已吸收） | 3.8 |
 | 12 | 合并 | v0.8.0 merge，5 处冲突手工解决，核心定制零丢失 | `44de91d4` | 3.9 |
+| 13 | 智能体 | `POST /agents/batch-model` 批量改对话模型（只动 config.model_id，内置跳过） | 待提交 | 3.10 |
 
 > 注：代码里 `managed_by='foxme'`、镜像名前缀等历史命名保留 foxme 字样，
 > 是**数据兼容 + 避免无谓迁移**的刻意选择，品牌已统一为 KitsuMe，不再重命名。
@@ -173,6 +174,43 @@ fork 曾用启发式修复（`ff2db17e`）；**v0.8.0 上游已引入 `_DEFAULT_
 `0.8.0-kitsume` 三件套（DB/Redis 走阿里云 RDS，qdrant 数据卷未动）；RDS 迁移 79→90；
 升级前全库备份 `/opt/weknora-kitsume/weknora_pre_080.dump`（pg_dump -Fc，2.9M），
 compose 原文件备份 `docker-compose.yml.bak.0.7.2`。
+
+---
+
+### 3.10 智能体批量改对话模型（`POST /agents/batch-model`）
+
+**文件**：`internal/router/routes_agent.go`、`internal/handler/custom_agent.go`、
+`internal/application/service/custom_agent.go`、`internal/application/repository/custom_agent.go`、
+`internal/types/interfaces/custom_agent.go`、`internal/types/custom_agent.go`、`docs/api/agent.md`
+
+**动机**：中台「智能体管理」页需要把**多个智能体的对话模型**一次性换成同一个模型。
+官方只有 `PUT /agents/:id`（整体覆盖 `{name,description,avatar,config}`），
+要批量改就得对每个智能体：读回完整 config → 改 `model_id` → 整体写回。
+智能体数量一多就是几十次请求，而且**读-改-写之间若有并发编辑会把别人的改动覆盖掉**。
+所以加一个只动一个字段的批量接口。
+
+**改动点**：
+
+- 新增 `POST /agents/batch-model`，body `{agent_ids: string[], model_id: string}`。
+  挂在 `agentsWrite` 组（`apiKeyManageAgents(apiKeyFullAccess())`），路由 guard 用 **`g.Admin()`** ——
+  一次改一个空间里的全部智能体，权限门槛与「编辑该空间内任意智能体」对齐。
+- **只更新 `config.model_id` 一个键**，用单条 UPDATE + JSON 函数完成，不做读-改-写：
+  - PostgreSQL：`jsonb_set(config, '{model_id}', to_jsonb(?::text), true)`
+  - SQLite（lite / 单测）：`json_set(config, '$.model_id', ?)`
+  - 双方言分支与既有 `scopeCustomAgentsByModelID`（`internal/repository/model_usage.go`）保持同款写法。
+- **内置智能体拒绝修改**：内置智能体的 config 由代码托管且跨租户共享，写进租户行要么被读路径忽略、
+  要么污染其他租户。请求里带内置 ID 不报错，列入响应 `skipped_builtin`。
+  同时 service 层用 `ListAgentsByTenantID` 先把不存在的 ID 摘出来放 `not_found`，
+  这样 `RowsAffected` 可以放心当「实际修改数」用。
+- 响应：`{updated, skipped_builtin, not_found, model_id}`，每个请求 ID 恰好落进一个桶，
+  调用方能区分「一个没改」和「改了一部分」。
+- 路由注册在 `/:id` 之前（否则 Gin 会把 `batch-model` 当成 agent id）。
+- `router_api_key_capabilities_test.go` 的写权限用例补上该路由，
+  确保它不被 `read_agents` 授予、且需要 `manage_agents`。
+
+**同步上游时注意**：这是纯新增，官方若给 `custom_agents` 加字段或调整 config 结构，
+只需确认 `jsonb_set` 的目标键名仍是 `model_id`（对应 `types.CustomAgentConfig.ModelID` 的
+`json:"model_id"` 标签）。若官方自己也加了批量接口，优先取官方实现并让中台改调官方路径。
 
 ---
 

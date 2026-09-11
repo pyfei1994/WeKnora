@@ -84,6 +84,23 @@ type CustomAgentService interface {
 	// It is independent of whether starter suggestions are enabled and is used
 	// as a source/fallback for contextual follow-up generation.
 	GetKnowledgeSuggestedQuestions(ctx context.Context, agentID string, kbIDs []string, knowledgeIDs []string, tagScopes []types.TagScope, limit int) ([]types.SuggestedQuestion, error)
+
+	// BatchUpdateChatModel overwrites the conversation model (config.model_id)
+	// on a set of agents in the caller's tenant.
+	//
+	// Only the chat model binding is touched — every other field of the agent
+	// config (prompt, tools, KB selection, rerank/VLM/ASR bindings) is left
+	// intact. This exists because the admin console needs to re-point many
+	// agents at once after a model is rotated or deprecated, and doing that
+	// one PUT /agents/:id at a time requires the full config round-trip and is
+	// unsafe to retry.
+	//
+	// Built-in agents are skipped and reported, never modified: their config is
+	// code-owned and shared across tenants.
+	//
+	// Returns the number of agents updated plus the ids that were skipped or
+	// missing, so callers can surface a per-item summary.
+	BatchUpdateChatModel(ctx context.Context, agentIDs []string, modelID string) (*types.BatchModelUpdateResult, error)
 }
 
 // CustomAgentRepository defines the custom agent repository interface
@@ -155,4 +172,12 @@ type CustomAgentRepository interface {
 	// to refuse operations. Agent references are permanent state, so blocking on
 	// them would make credential rotation impossible.
 	ListNamesBySandboxConfigID(ctx context.Context, tenantID uint64, configID string) ([]string, error)
+
+	// BatchUpdateChatModelOnConfigs sets config.model_id on the given agent rows
+	// in one statement, without a read-modify-write round-trip.
+	//
+	// The update is scoped by (id, tenant_id) so a cross-tenant id in the list
+	// simply doesn't match. Returns the number of rows actually changed.
+	// Callers must have already filtered built-in agents out.
+	BatchUpdateChatModelOnConfigs(ctx context.Context, tenantID uint64, agentIDs []string, modelID string) (int64, error)
 }

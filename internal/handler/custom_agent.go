@@ -393,6 +393,65 @@ func (h *CustomAgentHandler) UpdateAgent(c *gin.Context) {
 	})
 }
 
+// BatchUpdateAgentModelRequest is the body of POST /agents/batch-model.
+type BatchUpdateAgentModelRequest struct {
+	// AgentIDs are the agents to re-point. Built-in ids are refused, unknown
+	// ids are reported back; order is preserved in the response lists.
+	AgentIDs []string `json:"agent_ids" binding:"required"`
+	// ModelID is the chat model (config.model_id) to apply to every agent.
+	ModelID string `json:"model_id" binding:"required"`
+}
+
+// BatchUpdateAgentModel godoc
+// @Summary      批量修改智能体对话模型
+// @Description  一次性把多个智能体的 config.model_id 改为指定模型。只改对话模型一个字段，其余配置（提示词/工具/知识库/重排等）保持不变。内置智能体不可修改，会在响应中列出。
+// @Tags         智能体
+// @Accept       json
+// @Produce      json
+// @Param        request  body      BatchUpdateAgentModelRequest  true  "批量修改请求"
+// @Success      200      {object}  map[string]interface{}  "批量修改结果"
+// @Failure      400      {object}  errors.AppError  "请求参数错误"
+// @Security     Bearer
+// @Security     ApiKeyAuth
+// @Router       /agents/batch-model [post]
+func (h *CustomAgentHandler) BatchUpdateAgentModel(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	logger.Info(ctx, "Start batch updating agent chat model")
+
+	var req BatchUpdateAgentModelRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		logger.Error(ctx, "Failed to parse request parameters", err)
+		c.Error(errors.NewBadRequestError("Invalid request parameters").WithDetails(err.Error()))
+		return
+	}
+	if len(req.AgentIDs) == 0 {
+		c.Error(errors.NewBadRequestError("agent_ids cannot be empty"))
+		return
+	}
+
+	result, err := h.service.BatchUpdateChatModel(ctx, req.AgentIDs, req.ModelID)
+	if err != nil {
+		logger.ErrorWithFields(ctx, err, map[string]interface{}{
+			"count": len(req.AgentIDs),
+		})
+		switch err {
+		case service.ErrInvalidTenantID:
+			c.Error(errors.NewBadRequestError(err.Error()))
+		default:
+			c.Error(errors.NewInternalServerError(err.Error()))
+		}
+		return
+	}
+
+	logger.Infof(ctx, "Batch updated agent chat model, requested: %d, updated: %d",
+		len(req.AgentIDs), result.Updated)
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    result,
+	})
+}
+
 // DeleteAgent godoc
 // @Summary      删除智能体
 // @Description  删除指定的智能体

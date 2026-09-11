@@ -137,3 +137,34 @@ func (r *customAgentRepository) ListNamesBySandboxConfigID(
 	err := query.Order("name ASC").Pluck("name", &names).Error
 	return names, err
 }
+
+// BatchUpdateChatModelOnConfigs sets config.model_id on many agent rows at once.
+//
+// This is a single-statement JSON patch rather than a read-modify-write loop:
+// the caller may hand us hundreds of ids, and loading + decoding + re-saving
+// each config would both be slow and risk clobbering a concurrent edit.
+// Only the one key is touched; every other config key survives verbatim.
+//
+// Scoped by (id, tenant_id) — ids from another tenant simply don't match.
+func (r *customAgentRepository) BatchUpdateChatModelOnConfigs(
+	ctx context.Context, tenantID uint64, agentIDs []string, modelID string,
+) (int64, error) {
+	if len(agentIDs) == 0 {
+		return 0, nil
+	}
+
+	// jsonb_set on Postgres gives a true nested key replacement; json_extract/
+	// json_set covers the SQLite path used by tests and the lite edition.
+	var expr string
+	if r.db.Dialector.Name() == "postgres" {
+		expr = "jsonb_set(config, '{model_id}', to_jsonb(?::text), true)"
+	} else {
+		expr = "json_set(config, '$.model_id', ?)"
+	}
+
+	res := r.db.WithContext(ctx).
+		Model(&types.CustomAgent{}).
+		Where("tenant_id = ? AND id IN ?", tenantID, agentIDs).
+		Update("config", gorm.Expr(expr, modelID))
+	return res.RowsAffected, res.Error
+}

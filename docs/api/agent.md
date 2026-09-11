@@ -35,6 +35,7 @@
 | PUT    | `/agents/:id`              | 更新智能体                 |
 | DELETE | `/agents/:id`              | 删除智能体                 |
 | POST   | `/agents/:id/copy`         | 复制智能体                 |
+| POST   | `/agents/batch-model`      | 批量修改智能体对话模型     |
 | GET    | `/agents/placeholders`     | 获取占位符定义             |
 
 ---
@@ -371,6 +372,74 @@ curl --location --request POST 'http://localhost:8080/api/v1/agents/builtin-smar
 | 400    | 1000   | Bad Request           | 智能体 ID 为空     |
 | 404    | 1003   | Not Found             | 智能体不存在       |
 | 500    | 1007   | Internal Server Error | 服务器内部错误     |
+
+---
+
+## POST `/agents/batch-model` - 批量修改智能体对话模型
+
+把一个空间里**多个智能体**的对话模型（`config.model_id`）一次性改成同一个模型。
+
+只改对话模型这**一个字段**，智能体的其余配置（系统提示词、工具、知识库绑定、
+Rerank / VLM / ASR 模型、温度、迭代上限等）原样保留。适合模型轮换或下线时
+批量修复引用，避免逐个 `PUT /agents/:id` 时把完整 config 读回来再写回去。
+
+> 权限：Admin+。**内置智能体不可修改**，请求里带上内置 ID 不会报错，而是在响应
+> 的 `skipped_builtin` 中列出（内置智能体的配置由代码托管、跨租户共享）。
+> 不属于当前空间的 ID 也不会被修改，列入 `not_found`。
+
+**请求体**:
+
+| 参数        | 类型     | 必填 | 说明                                   |
+| ----------- | -------- | ---- | -------------------------------------- |
+| `agent_ids` | string[] | 是   | 要修改的智能体 ID 列表                 |
+| `model_id`  | string   | 是   | 目标对话模型 ID（写入 `config.model_id`） |
+
+**请求**:
+
+```curl
+curl --location --request POST 'http://localhost:8080/api/v1/agents/batch-model' \
+--header 'X-API-Key: sk-xxxxx' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+    "agent_ids": [
+        "550e8400-e29b-41d4-a716-446655440000",
+        "660e8400-e29b-41d4-a716-446655440001",
+        "builtin-smart-reasoning"
+    ],
+    "model_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+}'
+```
+
+**响应**:
+
+```json
+{
+    "success": true,
+    "data": {
+        "updated": 2,
+        "skipped_builtin": ["builtin-smart-reasoning"],
+        "not_found": [],
+        "model_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+    }
+}
+```
+
+**响应字段**:
+
+| 字段              | 类型     | 说明                                  |
+| ----------------- | -------- | ------------------------------------- |
+| `updated`         | number   | 实际被修改的智能体数量                |
+| `skipped_builtin` | string[] | 因是内置智能体而跳过的 ID             |
+| `not_found`       | string[] | 在当前空间找不到（或已删除）的 ID     |
+| `model_id`        | string   | 回显本次写入的模型 ID                 |
+
+**错误响应**:
+
+| 状态码 | 错误码 | 错误                  | 说明                    |
+| ------ | ------ | --------------------- | ----------------------- |
+| 400    | 1000   | Bad Request           | `agent_ids` 为空或 `model_id` 缺失 |
+| 403    | 1002   | Forbidden             | 权限不足（需 Admin+）   |
+| 500    | 1007   | Internal Server Error | 服务器内部错误          |
 
 ---
 

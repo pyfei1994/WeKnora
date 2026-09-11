@@ -197,6 +197,7 @@ func TestAgentWriteRoutesRequireManageAgentsCapability(t *testing.T) {
 		{http.MethodPut, "/api/v1/agents/:id"},
 		{http.MethodDelete, "/api/v1/agents/:id"},
 		{http.MethodPost, "/api/v1/agents/:id/copy"},
+		{http.MethodPost, "/api/v1/agents/batch-model"},
 	}
 
 	for _, tc := range cases {
