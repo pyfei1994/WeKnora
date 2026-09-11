@@ -45,7 +45,7 @@
 | 10 | Docker | 国内构建链：GOPROXY / APK 阿里镜像 / PyPI 清华镜像（PIP_INDEX_URL） | `cd788267` | 3.7 |
 | 11 | docreader | 引擎自动选择修复 —— **v0.8.0 上游已用类型级默认引擎表覆盖，合并时取上游版** | `ff2db17e`（已吸收） | 3.8 |
 | 12 | 合并 | v0.8.0 merge，5 处冲突手工解决，核心定制零丢失 | `44de91d4` | 3.9 |
-| 13 | 智能体 | `POST /agents/batch-model` 批量改对话模型（只动 config.model_id，内置跳过） | 待提交 | 3.10 |
+| 13 | 智能体 | `POST /agents/batch-model` 批量改对话模型（只动 config.model_id，内置跳过） | `8318dd0d` | 3.10 |
 
 > 注：代码里 `managed_by='foxme'`、镜像名前缀等历史命名保留 foxme 字样，
 > 是**数据兼容 + 避免无谓迁移**的刻意选择，品牌已统一为 KitsuMe，不再重命名。
