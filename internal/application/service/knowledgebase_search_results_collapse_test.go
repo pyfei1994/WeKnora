@@ -149,6 +149,75 @@ func TestImageSiblingPriorityRanksCaptionAboveOCRAboveSummaryAboveText(t *testin
 	}
 }
 
+// A query can surface only summary + text for a picture without ever matching
+// image_caption. Gating the collapse on the matched chunk types would leave
+// this case uncollapsed — which is the production duplicate we are fixing — so
+// the structural ParentChunkID signal must qualify the group on its own.
+func TestCollapseImageSiblingsQualifiesOnParentChunkIDWithoutImageType(t *testing.T) {
+	input := []*types.SearchResult{
+		{
+			ID:            "picture-text",
+			KnowledgeID:   "kb-1",
+			ChunkType:     types.ChunkTypeText,
+			Score:         0.52,
+			ParentChunkID: "",
+		},
+		{
+			ID:            "picture-summary",
+			KnowledgeID:   "kb-1",
+			ChunkType:     types.ChunkTypeSummary,
+			Score:         0.51,
+			ParentChunkID: "picture-text",
+		},
+	}
+
+	results, dropped := collapseImageSiblings(context.Background(), input)
+
+	if len(results) != 1 {
+		t.Fatalf("expected the image document to collapse to 1 result, got %d", len(results))
+	}
+	if len(dropped) != 1 || dropped[0] != "picture-text" {
+		t.Fatalf("expected the parent text chunk to be dropped in favour of summary, got %v", dropped)
+	}
+	if results[0].ChunkType != types.ChunkTypeSummary {
+		t.Fatalf("expected summary to win, got %q", results[0].ChunkType)
+	}
+}
+
+// ImageInfo alone is enough to mark a chunk as belonging to an image document,
+// covering rows where the parent link did not survive hydration.
+func TestCollapseImageSiblingsQualifiesOnImageInfoAlone(t *testing.T) {
+	input := []*types.SearchResult{
+		{ID: "a", KnowledgeID: "kb-1", ChunkType: types.ChunkTypeText, Score: 0.5},
+		{ID: "b", KnowledgeID: "kb-1", ChunkType: types.ChunkTypeText, Score: 0.4, ImageInfo: `[{"url":"resource://x"}]`},
+	}
+
+	results, dropped := collapseImageSiblings(context.Background(), input)
+
+	if len(results) != 1 || len(dropped) != 1 {
+		t.Fatalf("expected 1 survivor and 1 dropped, got %d survivors / %v dropped", len(results), dropped)
+	}
+}
+
+// Plain-text documents keep independent chunks with no parent link, so they
+// must never be merged even when several of them match at once.
+func TestCollapseImageSiblingsLeavesIndependentTextChunksAlone(t *testing.T) {
+	input := []*types.SearchResult{
+		{ID: "t1", KnowledgeID: "kb-1", ChunkType: types.ChunkTypeText, Score: 0.9},
+		{ID: "t2", KnowledgeID: "kb-1", ChunkType: types.ChunkTypeText, Score: 0.8},
+		{ID: "t3", KnowledgeID: "kb-1", ChunkType: types.ChunkTypeSummary, Score: 0.7},
+	}
+
+	results, dropped := collapseImageSiblings(context.Background(), input)
+
+	if len(dropped) != 0 {
+		t.Fatalf("independent text chunks must not collapse, dropped %v", dropped)
+	}
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(results))
+	}
+}
+
 // Nil and knowledge-less entries are skipped when grouping, so a malformed
 // result can never be dropped by the collapse.
 func TestCollapseImageSiblingsSkipsNilAndUnknownKnowledge(t *testing.T) {

@@ -316,12 +316,20 @@ func (s *knowledgeBaseService) assembleSearchResults(
 // chunk-level dedup keeps every one of them and the model ends up citing one
 // picture N times.
 //
-// Documents without image_ocr / image_caption siblings pass through untouched,
+// Documents whose chunks are all standalone text pass through untouched,
 // preserving the existing ordering and count for plain-text knowledge. When a
-// document does have image siblings, the winner is chosen by how much the
+// document does hold image siblings, the winner is chosen by how much the
 // model can actually use: image_caption (a description plus the image URL)
 // first, then image_ocr, then summary, then text. The highest score among the
 // collapsed group is kept so ranking against other documents is unchanged.
+//
+// "Is this an image document" is deliberately NOT derived from which chunk
+// types the query happened to match. A query can surface only summary + text
+// for a picture and never touch image_caption, and gating on the matched
+// types would leave that case uncollapsed — exactly the duplicate we are
+// fixing. The reliable signal is structural: image children carry a non-empty
+// ParentChunkID (they hang under the picture's text chunk) and/or ImageInfo,
+// so any group containing one of those qualifies.
 //
 // Returns the collapsed results plus the IDs that were dropped, so the caller
 // can mark them handled and keep the enrichment pass from re-adding them.
@@ -330,9 +338,9 @@ func collapseImageSiblings(ctx context.Context, results []*types.SearchResult) (
 		return results, nil
 	}
 
-	// Group image-document results by knowledge ID. A document only qualifies
-	// when at least one image_ocr / image_caption chunk matched — that is what
-	// distinguishes "one picture, many views" from ordinary multi-chunk text.
+	// Group by knowledge ID. A group qualifies as an image document when at
+	// least one member is structurally an image chunk (has a parent or carries
+	// image metadata) or matched as image_ocr / image_caption.
 	type group struct {
 		indices   []int
 		topScore  float64
@@ -353,7 +361,7 @@ func collapseImageSiblings(ctx context.Context, results []*types.SearchResult) (
 		if r.Score > g.topScore {
 			g.topScore = r.Score
 		}
-		if r.ChunkType == types.ChunkTypeImageOCR || r.ChunkType == types.ChunkTypeImageCaption {
+		if isImageSiblingResult(r) {
 			g.hasImage = true
 		}
 	}
@@ -398,6 +406,24 @@ func collapseImageSiblings(ctx context.Context, results []*types.SearchResult) (
 	}
 	logger.Infof(ctx, "Collapsed %d image sibling chunk(s) into their parent result", len(dropIndices))
 	return collapsed, droppedIDs
+}
+
+// isImageSiblingResult reports whether a search result is structurally part of
+// an image document's chunk family.
+//
+// ParentChunkID is the primary signal: image_ocr / image_caption / summary
+// children always point at the picture's text chunk, while a plain-text
+// document's chunks are independent rows with no parent. ImageInfo is the
+// secondary signal for chunks that embed the picture handle directly, and the
+// chunk type check covers the case where neither field survived hydration.
+func isImageSiblingResult(r *types.SearchResult) bool {
+	if r == nil {
+		return false
+	}
+	if r.ParentChunkID != "" || r.ImageInfo != "" {
+		return true
+	}
+	return r.ChunkType == types.ChunkTypeImageOCR || r.ChunkType == types.ChunkTypeImageCaption
 }
 
 // imageSiblingPriority ranks chunk types of one image document by how much
