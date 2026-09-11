@@ -140,6 +140,20 @@ func (s *resourceCatalogFileService) GetFileURL(ctx context.Context, filePath st
 	if err != nil {
 		return "", err
 	}
+	unwrapped := unwrapBackendScope(physical)
+
+	// A resource:// handle resolves to a provider path, but `s.inner` is the
+	// process-wide default service — chosen from STORAGE_TYPE at boot, which
+	// is unrelated to where the handle actually lives. When the resolved path
+	// is an OSS object and the deployment serves its bucket publicly, build
+	// the stable unsigned URL straight from the path: those links need no
+	// proxy hop, never expire, and are cacheable, unlike the /r/<token>
+	// capability URL below (2h TTL, which is exactly how chat images go blank
+	// in saved history).
+	if ossURL, ok := publicObjectURL(unwrapped); ok {
+		return ossURL, nil
+	}
+
 	if isResource && s.externalURL != "" {
 		token, grantErr := s.catalog.CreateAccessGrant(ctx, filePath, 2*time.Hour)
 		if grantErr != nil {
@@ -147,7 +161,39 @@ func (s *resourceCatalogFileService) GetFileURL(ctx context.Context, filePath st
 		}
 		return s.externalURL + "/r/" + token, nil
 	}
-	return s.inner.GetFileURL(ctx, unwrapBackendScope(physical))
+	return s.inner.GetFileURL(ctx, unwrapped)
+}
+
+// publicObjectURL returns a stable unsigned URL for a provider path when the
+// object's bucket is served publicly, and false otherwise.
+//
+// Only OSS participates today, and only when the deployment opts in with
+// OSS_PUBLIC_URL=true (the same switch ossFileService.GetFileURL honours, so
+// one bucket yields one URL shape everywhere). The endpoint is not carried in
+// the path — `oss://<bucket>/<key>` has no host — so it comes from
+// OSS_PUBLIC_URL_ENDPOINT, falling back to the OSS_ENDPOINT already used by
+// the env-configured backend.
+func publicObjectURL(physical string) (string, bool) {
+	if !ossPublicURLEnabled() {
+		return "", false
+	}
+	const ossSchemePrefix = "oss://"
+	if !strings.HasPrefix(physical, ossSchemePrefix) {
+		return "", false
+	}
+	rest := strings.TrimPrefix(physical, ossSchemePrefix)
+	bucket, key, ok := strings.Cut(rest, "/")
+	if !ok || bucket == "" || key == "" {
+		return "", false
+	}
+	endpoint := strings.TrimSpace(os.Getenv("OSS_PUBLIC_URL_ENDPOINT"))
+	if endpoint == "" {
+		endpoint = strings.TrimSpace(os.Getenv("OSS_ENDPOINT"))
+	}
+	if endpoint == "" {
+		return "", false
+	}
+	return ossPublicURL(endpoint, bucket, key), true
 }
 
 // unwrapBackendScope strips the storage://{backendID}/ scope prefix that

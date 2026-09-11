@@ -8,6 +8,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -28,9 +29,73 @@ type ossFileService struct {
 	pathPrefix     string
 	bucketName     string
 	tempBucketName string
+	// endpoint is the OSS endpoint used to build unsigned public URLs
+	// (e.g. "oss-cn-beijing.aliyuncs.com").
+	endpoint string
+	// tempEndpoint mirrors tempClient's endpoint for temp-bucket public URLs.
+	tempEndpoint string
 }
 
 const ossScheme = "oss://"
+
+// ossPublicURLEnv opts GetFileURL into emitting unsigned, non-expiring URLs.
+//
+// GetFileURL has two possible result shapes and callers must not assume which
+// one they get:
+//   - presigned: https://<bucket>.<endpoint>/<key>?Expires=…&Signature=… (24h)
+//   - public:    https://<bucket>.<endpoint>/<key>                        (no expiry)
+//
+// The presigned form is the default because it is always valid. The public form
+// is only correct when the bucket is public-read, so it stays opt-in: a
+// deployment serving its own public-read bucket (e.g. KitsuMe's `foxme`) turns
+// it on to get stable, cacheable links that match the URL shape its own backend
+// already emits. Signed links silently break images embedded in saved chat
+// history once they expire — which is the failure this switch exists to avoid.
+const ossPublicURLEnv = "OSS_PUBLIC_URL"
+
+// ossPublicURLEnabled reports whether GetFileURL should emit unsigned public
+// URLs. The value is re-read per call so toggling it needs no restart.
+func ossPublicURLEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(ossPublicURLEnv))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+// ossPublicURL builds the unsigned, non-expiring URL for an object.
+func ossPublicURL(endpoint, bucketName, objectKey string) string {
+	ep := strings.TrimSpace(endpoint)
+	ep = strings.TrimPrefix(ep, "https://")
+	ep = strings.TrimPrefix(ep, "http://")
+	ep = strings.TrimSuffix(ep, "/")
+	return "https://" + bucketName + "." + ep + "/" + strings.TrimPrefix(objectKey, "/")
+}
+
+// normalizeOSSRegion converts an OSS endpoint style region ("oss-cn-beijing")
+// into the bare signing region the SDK v4 signer requires ("cn-beijing").
+//
+// The SDK feeds Config.Region verbatim into the V4 credential scope
+// ("<date>/<region>/oss/aliyun_v4_request"), and the OSS service validates it
+// against a known region list. Passing the endpoint-style name (which is how
+// the storage-backend form stores it, since the same field doubles as the
+// endpoint host) makes OSS reject every signed request with
+// "InvalidArgument: Invalid signing region in Authorization header".
+//
+// Non-OSS providers (S3/MinIO/COS/TOS) keep their own region conventions, so
+// only the "oss-" prefix is stripped here; anything without it passes through.
+func normalizeOSSRegion(region string) string {
+	r := strings.TrimSpace(region)
+	if r == "" {
+		return r
+	}
+	// "oss-cn-beijing" -> "cn-beijing", but leave "cn-beijing" untouched.
+	if strings.HasPrefix(strings.ToLower(r), "oss-") {
+		return r[len("oss-"):]
+	}
+	return r
+}
 
 // newOSSClient creates an OSS client using the official Aliyun SDK v2.
 func newOSSClient(endpoint, region, accessKey, secretKey string) (*oss.Client, error) {
@@ -41,7 +106,7 @@ func newOSSClient(endpoint, region, accessKey, secretKey string) (*oss.Client, e
 
 	cfg := oss.LoadDefaultConfig().
 		WithCredentialsProvider(creds).
-		WithRegion(region).
+		WithRegion(normalizeOSSRegion(region)).
 		WithEndpoint(endpoint).
 		WithHttpClient(utils.NewSSRFSafeHTTPClient(utils.DefaultSSRFSafeHTTPClientConfig()))
 
@@ -113,6 +178,8 @@ func NewOssFileServiceWithTempBucket(endpoint, region, accessKey, secretKey, buc
 		pathPrefix:     pathPrefix,
 		bucketName:     bucketName,
 		tempBucketName: tempBucketName,
+		endpoint:       endpoint,
+		tempEndpoint:   endpoint,
 	}, nil
 }
 
@@ -335,7 +402,14 @@ func (s *ossFileService) DeleteFile(ctx context.Context, filePath string) error 
 	return nil
 }
 
-// GetFileURL returns a presigned download URL for the file.
+// GetFileURL returns a URL an external client can load directly.
+//
+// By default this is a presigned URL valid for 24 hours, which is correct for
+// a private bucket but silently breaks images embedded in saved chat history
+// once the signature expires. Deployments that serve from a public-read bucket
+// (KitsuMe's `foxme`) set OSS_PUBLIC_URL=true to get the stable unsigned form
+// https://<bucket>.<endpoint>/<key> instead, matching the URLs its own backend
+// already emits — so one bucket produces one consistent URL shape everywhere.
 func (s *ossFileService) GetFileURL(ctx context.Context, filePath string) (string, error) {
 	bucketName, objectName, err := parseOssFilePath(filePath)
 	if err != nil {
@@ -347,10 +421,19 @@ func (s *ossFileService) GetFileURL(ctx context.Context, filePath string) (strin
 
 	// Determine which client to use
 	var client *oss.Client
+	endpoint := s.endpoint
 	if bucketName == s.tempBucketName && s.tempClient != nil {
 		client = s.tempClient
+		endpoint = s.tempEndpoint
 	} else {
 		client = s.client
+	}
+
+	// Public-read bucket: emit the unsigned, non-expiring URL. Falling back to
+	// presigning here would defeat the point — the whole reason to opt in is
+	// that these links outlive the 24h signature.
+	if ossPublicURLEnabled() {
+		return ossPublicURL(endpoint, bucketName, objectName), nil
 	}
 
 	// Generate presigned URL (valid for 24 hours)
