@@ -41,6 +41,7 @@
 | 6 | nginx | `chunked_transfer_encoding on`，修复 gzip JSON 响应挂死 + 保住 SSE | `b2aec009` | 3.4 |
 | 7 | query-understand | 图片描述为空时用独立 VLM 调用补图，非视觉主模型也能"看到"图 | `d6324c3c` | 3.5 |
 | 8 | 资源目录 | `storage://` 后端 scope 解包，修复聊天回答配图丢失 | `a416ea3c` | 3.6 |
+| 9 | Agent 对话 | `caller_context` 对话者身份注入 system prompt（只注入 LLM、不参与检索） | `05c53628` | 3.11 |
 | 9 | Docker | `docker-compose.kitsume.yml` 部署覆盖；本地 dev 暴露 pg/redis 端口 | `eaf1dc22` `7a1efbb6` `ff703bcf` | 3.7 |
 | 10 | Docker | 国内构建链：GOPROXY / APK 阿里镜像 / PyPI 清华镜像（PIP_INDEX_URL） | `cd788267` | 3.7 |
 | 11 | docreader | 引擎自动选择修复 —— **v0.8.0 上游已用类型级默认引擎表覆盖，合并时取上游版** | `ff2db17e`（已吸收） | 3.8 |
@@ -211,6 +212,46 @@ compose 原文件备份 `docker-compose.yml.bak.0.7.2`。
 **同步上游时注意**：这是纯新增，官方若给 `custom_agents` 加字段或调整 config 结构，
 只需确认 `jsonb_set` 的目标键名仍是 `model_id`（对应 `types.CustomAgentConfig.ModelID` 的
 `json:"model_id"` 标签）。若官方自己也加了批量接口，优先取官方实现并让中台改调官方路径。
+
+### 3.11 Agent 对话：caller_context 对话者身份注入（`05c53628`）
+
+**文件**：`internal/agent/engine.go`、`internal/types/interfaces/agent.go`、
+`internal/types/qa_request.go`、`internal/handler/session/types.go`、
+`internal/handler/session/qa.go`、`internal/application/service/session_agent_qa.go`、
+`docs/api/chat.md`
+
+**动机**：KitsuMe 的分身可以被**分享给他人**对话。同一条 `agent-chat` 链路里，
+模型无法区分「当前是分身主人本人在聊」还是「访客通过分享链接进来」。
+两者期望的回答方式不同：对主人可直接深入（他了解自己的设定与知识库）、
+对访客应更完整克制，且不能输出只有主人有权限的内容。
+
+**改动点**：
+
+- 新增按轮字段 **`caller_context`**（`CreateKnowledgeQARequest.CallerContext`，
+  `json:"caller_context,omitempty"`），语义与 IM 的 `QuotedContext` 同族：
+  **只注入 LLM、不参与检索**。
+- `AgentEngine` 新增 `callerContext` 字段与 `SetCallerContext(prompt string)`，
+  与既有 `memoryPrompt` **并列拼进 system prompt**：
+  `... + e.memoryPrompt + e.callerContext + e.modelContext.ProtocolPrompt()`。
+- 为什么**不能**拼进 `query`：`query` 同时喂 RAG 检索与改写，
+  把身份这类元信息混进去会让召回偏离（例如「主人」被当成检索关键词匹配到无关段落）。
+  `session_agent_qa.go` 里既有的 `QuotedContext` 是拼进 `agentQuery` 的 ——
+  那是历史实现，新增的身份类内容不要沿用那个位置。
+- 调用顺序：`sessionService.AgentQA` 在建好 engine 之后、`Execute` 之前注入；
+  空字符串是 no-op（保持"未设置"语义）。
+- 只在 **AgentQA（agent-chat）** 路径生效；`knowledge-chat` 路径未接入。
+
+**消费方（KitsuMe 后端）**：WS 建连时已算出 `isOwner`（`ownerUserId == uid`，
+见 `ChatWebSocketHandler`），原先没往下传；现在转成身份说明文本，
+经 `WeknoraClient.chatStream(..., callerContext)` 放进请求体。
+主人/访客两段文案写在 `ChatWebSocketHandler.callerContextOf(boolean)` 里 ——
+访客那段特意写明「主人在『我的提示词』里声明过、愿意公开的信息可以正常告知」，
+因为主人可以在小程序里编辑该提示词，**透不透漏应由主人决定，而不是在代码里写死**。
+
+**同步上游时注意**：这是纯新增字段 + 纯追加拼接。官方若重构 `AgentEngine` 的
+system prompt 组装（拼接返回值那一处）或 `QARequest` 结构，需要把 `callerContext`
+的拼接位置一并迁移。若官方自己也加了类似的「按轮上下文」字段，
+优先复用官方实现并把 `caller_context` 映射过去。
 
 ---
 
