@@ -59,6 +59,7 @@ type CreateKnowledgeQARequest struct {
 	AttachmentUploads     []AttachmentUpload           `json:"attachment_uploads,omitempty"`          // Attached files (documents, audio, etc.)
 	AttachmentIDs         []string                     `json:"attachment_ids,omitempty"`              // Pre-uploaded session-scoped document IDs
 	Channel               string                       `json:"channel"`                               // Source channel: "web", "api", "im", etc.
+	CallerContext         string                       `json:"caller_context,omitempty"`              // Per-turn caller identity note (owner vs. share-link guest); injected into the system prompt only, never used for retrieval
 	SuggestionAttribution *types.SuggestionAttribution `json:"suggestion_attribution,omitempty"`
 }
 

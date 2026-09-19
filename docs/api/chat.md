@@ -86,6 +86,7 @@ Agent 模式支持更智能的问答，包括工具调用、网络搜索、多�
 | `disable_title` | bool | 否 | 是否禁用自动标题生成（默认 false） |
 | `images` | object[] | 否 | 附带的图片（base64 格式），需要 Agent 启用图片上传 |
 | `channel` | string | 否 | 来源渠道标识：`web`、`api`、`im`、`browser_extension` |
+| `caller_context` | string | 否 | **对话者身份说明**（如「本轮和你对话的是分身主人本人」/「是通过分享访问的访客」）。**只拼进 system prompt，不参与检索** —— 与 `query` 分开正是为了不污染 RAG 召回 |
 | `suggestion_attribution` | object | 否 | 用户从推荐问题发起本轮时传入 `{suggestion_set_id, question_id}`；服务端会校验归属 |
 
 ## 回答后推荐问题

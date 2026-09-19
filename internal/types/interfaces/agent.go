@@ -32,6 +32,12 @@ type AgentEngine interface {
 	// SetMemoryPrompt supplies the long-term memory envelope for this run.
 	// It must be called before Execute; an empty string is a no-op.
 	SetMemoryPrompt(prompt string)
+
+	// SetCallerContext supplies a per-turn note describing who is talking to
+	// this agent (owner vs. share-link guest). It is appended to the system
+	// prompt, never to the query, so retrieval is unaffected.
+	// It must be called before Execute; an empty string is a no-op.
+	SetCallerContext(prompt string)
 }
 
 // AgentService defines the interface for agent-related operations

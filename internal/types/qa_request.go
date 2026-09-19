@@ -20,5 +20,6 @@ type QARequest struct {
 	UserMessageID       string             // Created user message ID
 	WebSearchEnabled    bool               // Whether web search is enabled for this request
 	QuotedContext       string             // Quoted message content from IM quote-reply (appended at LLM prompt stage, not used for retrieval)
+	CallerContext       string             // Per-turn caller identity note (owner vs. share-link guest); appended to the system prompt only, never to the query, so retrieval is unaffected
 	Attachments         MessageAttachments // File attachments (processed and ready for prompt injection)
 }

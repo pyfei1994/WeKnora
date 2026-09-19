@@ -44,6 +44,7 @@ type AgentEngine struct {
 	sessionID            string                  // Session ID for logging and event emission
 	systemPromptTemplate string                  // System prompt template (optional, uses default if empty)
 	memoryPrompt         string                  // Long-term memory envelope appended to the system prompt
+	callerContext        string                  // Per-turn caller identity note, also appended to the system prompt (never used for retrieval)
 	skillsManager        *skills.Manager         // Skills manager for Progressive Disclosure (optional)
 	appConfig            *appconfig.Config       // Application config for prompt template resolution (optional)
 	imageDescriber       ImageDescriberFunc      // VLM function for describing images in tool results (optional)
@@ -140,13 +141,24 @@ func (e *AgentEngine) buildSystemPrompt(ctx context.Context) string {
 	// Memory has to ride in the system prompt: buildMessagesWithLLMContext
 	// drops system messages coming from history, so a separate memory message
 	// would be silently discarded from the second turn onward.
-	return strings.TrimRight(prompt, " \t\r\n") + e.memoryPrompt + e.modelContext.ProtocolPrompt()
+	return strings.TrimRight(prompt, " \t\r\n") + e.memoryPrompt + e.callerContext + e.modelContext.ProtocolPrompt()
 }
 
 // SetMemoryPrompt supplies the long-term memory envelope for this run. Empty
 // input leaves the system prompt untouched.
 func (e *AgentEngine) SetMemoryPrompt(prompt string) {
 	e.memoryPrompt = prompt
+}
+
+// SetCallerContext supplies a per-turn note describing who is talking to this
+// agent — e.g. the avatar's owner vs. a guest who arrived via a share link.
+//
+// It deliberately rides in the system prompt (like memoryPrompt) instead of
+// being prepended to the query: the query feeds both retrieval and the LLM, so
+// mixing identity metadata into it would pollute RAG recall. Empty input leaves
+// the system prompt untouched.
+func (e *AgentEngine) SetCallerContext(prompt string) {
+	e.callerContext = prompt
 }
 
 // NewAgentEngineWithSkills creates a new agent engine with skills support

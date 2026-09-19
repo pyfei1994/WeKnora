@@ -230,6 +230,13 @@ func (s *sessionService) AgentQA(
 		}
 	}
 
+	// Caller identity rides in the system prompt, never in the query: the query
+	// feeds both retrieval and the LLM, so putting identity metadata there would
+	// pollute RAG recall. See AgentEngine.SetCallerContext.
+	if req.CallerContext != "" {
+		engine.SetCallerContext(req.CallerContext)
+	}
+
 	agentQuery := req.Query
 	var agentImageURLs []string
 	if agentModelSupportsVision && len(req.ImageURLs) > 0 {

@@ -56,6 +56,7 @@ type qaRequestContext struct {
 	userMessageID         string                   // Created user message ID (populated after createUserMessage)
 	userCreatedAt         time.Time                // Persisted user message timestamp, echoed on agent_query
 	channel               string                   // Source channel: "web", "api", "im", etc.
+	callerContext         string                   // Per-turn caller identity note (owner vs. share-link guest); rides in the system prompt, never in the query
 	attachments           types.MessageAttachments // Processed base64 file attachments (legacy inline uploads)
 	attachmentIDs         []string                 // Pre-uploaded session-scoped document IDs, resolved after SSE starts
 	attachmentMetas       types.MessageAttachments // Metadata-only view of attachmentIDs for the persisted user message
@@ -91,6 +92,7 @@ func (rc *qaRequestContext) buildQARequest() *types.QARequest {
 		ImageDescription:    imageDescription,
 		UserMessageID:       rc.userMessageID,
 		WebSearchEnabled:    rc.webSearchEnabled,
+		CallerContext:       rc.callerContext,
 		Attachments:         rc.attachments,
 	}
 }
@@ -382,6 +384,7 @@ func (h *Handler) parseQARequest(c *gin.Context, logPrefix string) (*qaRequestCo
 		sharedAgentReadOnly:   sharedAgentReadOnly,
 		images:                request.Images,
 		channel:               request.Channel,
+		callerContext:         request.CallerContext,
 		attachments:           processedAttachments,
 		attachmentIDs:         attachmentIDs,
 		attachmentMetas:       attachmentMetas,
