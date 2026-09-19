@@ -611,14 +611,20 @@ func GetBuiltinAgent(id string, tenantID uint64) *CustomAgent {
 // BatchModelUpdateResult summarises a batch chat-model reassignment across
 // agents. Every requested id lands in exactly one bucket, so callers can tell
 // "nothing happened" apart from "some of it was refused".
+//
+// ⚠️ 这几个字段**必须带 json tag**：结构体没写 tag 时 Go 按字段名原样序列化
+// （Updated / SkippedBuiltin / NotFound / ModelID），而 kitsume 等消费方是按
+// snake_case 读的 ⇒ 会全部读成零值：实测线上出现「批量改模型其实成功了，
+// 但接口统计返回 updated=0、前端弹『没有智能体被修改』」(2026-09-19)。
+// 加 tag 后与 handler 文档里写的 {updated, skipped_builtin, not_found, model_id} 一致。
 type BatchModelUpdateResult struct {
 	// Updated is the number of agents whose chat model was actually changed.
-	Updated int
+	Updated int `json:"updated"`
 	// SkippedBuiltin lists built-in agent ids that were refused: their config
 	// is code-owned and shared across tenants, so an admin cannot re-point them.
-	SkippedBuiltin []string
+	SkippedBuiltin []string `json:"skipped_builtin"`
 	// NotFound lists requested ids that no longer exist in the tenant.
-	NotFound []string
+	NotFound []string `json:"not_found"`
 	// ModelID echoes the model that was applied, for the caller's confirmation UI.
-	ModelID string
+	ModelID string `json:"model_id"`
 }
